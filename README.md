@@ -43,7 +43,7 @@ sequenceDiagram
 The rules @keyholder applies on every approval:
 
 1. The latest @auditor verdict for the pull request must name the pull request's current head commit, full 40-character SHA. No verdict yet means "wait", not a failure. A verdict for an older commit means "stale, wait for a fresh audit". A verdict at the current commit that can't be parsed means the pull request is treated as CRITICAL.
-2. Required approvals are the higher of the verdict (LOW and MEDIUM need 1, HIGH needs 2, CRITICAL never merges) and a floor from the changed files: `src/auth.js`, anything under `src/auth/`, `package.json`, `package-lock.json`, `.github/`, or any `.env`, `.env.*` or `.envrc` file is at least HIGH. A fooled auditor can't talk the gate down.
+2. Required approvals are the higher of the verdict (LOW and MEDIUM need 1, HIGH needs 2, CRITICAL never merges) and a floor from the changed files. Changes to `.github/` or any `.env`, `.env.*` or `.envrc` file are always at least HIGH. So are the project's own sensitive paths: by default `src/auth.js`, anything under `src/auth/`, `package.json` and `package-lock.json`, or whatever `SENSITIVE_PATHS` lists for another repo. A fooled auditor can't talk the gate down.
 3. Each reviewer counts once. If the head moves between approvals, the count starts again.
 4. Before merging, the head is checked once more, and CI must be green. An empty check-run list means "not registered yet", not "passed". The merge call passes the approved SHA, so GitHub itself refuses if the head moved in the last second.
 
@@ -55,7 +55,7 @@ Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts 
 |---|---|
 | @builder is prompt-injected and tries to push to `main` or merge on GitHub | Its GitHub account has no write access to the upstream repo. It can only push to its own fork and open pull requests. |
 | A compromised agent tells @keyholder to merge | @keyholder's addressing policy admits the two reviewers and no agents. Switch's server posts the refusal, and @keyholder's code never sees the message. |
-| @auditor is fooled into rating a dangerous change LOW | A change to `src/auth.js`, `src/auth/`, `package.json`, `package-lock.json`, `.github/`, or an `.env`, `.env.*` or `.envrc` file needs two approvals whatever the verdict says. Any other change still needs a reviewer to approve the exact commit. |
+| @auditor is fooled into rating a dangerous change LOW | A change to `.github/`, an `.env`, `.env.*` or `.envrc` file, or one of the project's sensitive paths (by default `src/auth.js`, `src/auth/`, `package.json`, `package-lock.json`) needs two approvals whatever the verdict says. Any other change still needs a reviewer to approve the exact commit. |
 | @builder posts a fake verdict tag | @keyholder reads verdicts only from the senders in `AUDITOR_SENDERS`. |
 | A commit lands after the audit or between approvals | Approvals count only for the commit the verdict names, and the count restarts if the head moves. The merge call passes the approved SHA, so GitHub refuses a head that moved at the last moment. |
 | The pull request's tests try to reach the network or change their own files | `audit/run.sh` runs them in a container with no network and read-only mounts. |
@@ -134,13 +134,14 @@ npm test           # demo-service, audit and keyholder
 npm run typecheck
 ```
 
-The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the src/auth.js floor, duplicate approvals, resets on new commits, CI that hasn't registered yet, failed CI, malformed verdicts. `audit/run.sh` and the live Switch connection need the real setup above to run.
+The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, CI that hasn't registered yet, failed CI, malformed verdicts. `audit/run.sh` and the live Switch connection need the real setup above to run.
 
 ## Known limitations
 
 - **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped.
 - **CI waits up to 30 seconds.** After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
 - **One upstream repo per @keyholder.** `GITHUB_REPOSITORY` is fixed.
-- **The floor list is short and fixed.** It covers this demo's sensitive paths, not a real project's.
+- **The project's sensitive paths are a plain list.** `SENSITIVE_PATHS` takes exact files and folders (`internal/auth/,go.mod`). It doesn't understand glob patterns, and its default fits demo-service.
+- **`audit/run.sh` is written for demo-service.** It mounts `src/`, `test/` and `package.json` and runs `node --test`, so a repo in another language needs its own test step there.
 - **`mergeable_state` isn't used.** GitHub documents it as best-effort, so the merge waits on check runs instead.
 - **@auditor is still a model.** It can be fooled. The design limits what that costs (the floor, the commit pinning, the human approvals) rather than assuming it can't happen.

@@ -41,6 +41,7 @@ save();
 const client = new SwitchClient(config.bridgeUrl, config.agentId, config.apiKey, connectionId);
 const room = new Room(client, config.roomId);
 const gate = new Gate(createGitHub(config.githubToken, config.owner, config.repo), room, state, {
+  sensitivePaths: config.sensitivePaths,
   ciPollMs: 3000,
   ciTimeoutMs: 30000,
   onStateChange: save,

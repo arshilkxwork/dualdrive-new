@@ -88,22 +88,36 @@ export function parseApproval(body: string, handle: string): number | null {
   return found ? Number(found[1]) : null;
 }
 
+// demo-service's own sensitive paths. SENSITIVE_PATHS replaces this list for
+// a repo laid out differently. An entry ending in "/" covers everything
+// under that folder; any other entry is one file, so src/auth.js is listed
+// by name because "src/auth/" alone would miss it.
+export const DEFAULT_SENSITIVE_PATHS: readonly string[] = ['src/auth.js', 'src/auth/', 'package.json', 'package-lock.json'];
+
 // Paths that raise a pull request to at least HIGH whatever the auditor says.
-// src/auth.js is matched by name: a prefix check on "src/auth/" alone misses it.
-export function isSensitivePath(path: string): boolean {
+// CI config and env files count in every repo, so no setting can drop them.
+export function isSensitivePath(path: string, projectPaths: readonly string[] = DEFAULT_SENSITIVE_PATHS): boolean {
   return (
-    path === 'src/auth.js' ||
-    path.startsWith('src/auth/') ||
-    path === 'package.json' ||
-    path === 'package-lock.json' ||
     path.startsWith('.github/') ||
     // .env, .env.local and the like, and direnv's .envrc; not .environment.
-    /(^|\/)\.env(rc)?(\.|\/|$)/i.test(path)
+    /(^|\/)\.env(rc)?(\.|\/|$)/i.test(path) ||
+    projectPaths.some((entry) => (entry.endsWith('/') ? path.startsWith(entry) : path === entry))
   );
 }
 
-export function floorRisk(paths: string[]): Risk {
-  return paths.some(isSensitivePath) ? 'HIGH' : 'LOW';
+export function floorRisk(paths: string[], projectPaths: readonly string[] = DEFAULT_SENSITIVE_PATHS): Risk {
+  return paths.some((path) => isSensitivePath(path, projectPaths)) ? 'HIGH' : 'LOW';
+}
+
+// Reads a comma-separated SENSITIVE_PATHS value. Unset or empty means the
+// defaults; a leading "./" or "/" is dropped, since GitHub reports paths
+// relative to the repo root.
+export function parseSensitivePaths(value: string | undefined): readonly string[] {
+  const entries = (value ?? '')
+    .split(',')
+    .map((entry) => entry.trim().replace(/^\.?\/+/, ''))
+    .filter(Boolean);
+  return entries.length > 0 ? entries : DEFAULT_SENSITIVE_PATHS;
 }
 
 export function higherRisk(a: Risk, b: Risk): Risk {
