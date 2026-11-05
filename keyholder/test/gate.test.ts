@@ -222,3 +222,19 @@ test('a failure after the approval is saved says it was saved', async () => {
   assert.match(posts.at(-1)!, /alice's approval for #1 is recorded, but something failed after that: Switch is unreachable/);
   assert.deepEqual(state.approvals[1].reviewers, [alice.key]);
 });
+
+test('the gate uses the configured sensitive paths and names the one that tripped it', async () => {
+  const github = new FakeGitHub();
+  github.paths = ['internal/auth/token.go'];
+  const posts: string[] = [];
+  const gate = new Gate(
+    github,
+    { post: async (body) => void posts.push(body), record: async () => {} },
+    { approvals: {} },
+    { sensitivePaths: ['internal/auth/'], ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
+  );
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!);
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /1 of 2, rated LOW by the auditor, raised to HIGH because it changes internal\/auth\/token\.go/);
+  assert.deepEqual(github.merged, []);
+});

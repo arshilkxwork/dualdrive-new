@@ -47,6 +47,8 @@ export interface GateState {
 }
 
 export interface GateOptions {
+  // Replaces DEFAULT_SENSITIVE_PATHS in the floor check when given.
+  sensitivePaths?: readonly string[];
   ciPollMs: number;
   ciTimeoutMs: number;
   sleep?: (ms: number) => Promise<void>;
@@ -133,7 +135,7 @@ export class Gate {
     }
 
     const paths = await this.github.listChangedPaths(pr);
-    const floor = floorRisk(paths);
+    const floor = floorRisk(paths, this.options.sensitivePaths);
     const risk = higherRisk(verdict.verdict.risk, floor);
     const required = requiredApprovals(risk);
     if (!Number.isFinite(required)) {
@@ -145,7 +147,7 @@ export class Gate {
     }
     let ratedAs = `rated ${risk}`;
     if (risk !== verdict.verdict.risk) {
-      const reason = paths.find(isSensitivePath);
+      const reason = paths.find((path) => isSensitivePath(path, this.options.sensitivePaths));
       ratedAs = `rated ${verdict.verdict.risk} by the auditor, raised to ${risk} because it changes ${reason}`;
     }
 

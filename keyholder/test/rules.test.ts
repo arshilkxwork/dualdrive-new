@@ -1,6 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ciState, floorRisk, parseApproval, parseVerdictTag, requiredApprovals } from '../src/rules.ts';
+import {
+  DEFAULT_SENSITIVE_PATHS,
+  ciState,
+  floorRisk,
+  parseApproval,
+  parseSensitivePaths,
+  parseVerdictTag,
+  requiredApprovals,
+} from '../src/rules.ts';
 
 const SHA = 'a1b2c3d4e5f67890123456789012345678901234';
 
@@ -65,4 +73,30 @@ test('no check runs yet is pending, not passed', () => {
   assert.equal(ciState([{ status: 'in_progress', conclusion: null }]), 'pending');
   assert.equal(ciState([{ status: 'completed', conclusion: 'success' }]), 'passed');
   assert.equal(ciState([{ status: 'completed', conclusion: 'failure' }, { status: 'queued', conclusion: null }]), 'failed');
+});
+
+test('a repo can name its own sensitive paths', () => {
+  const goService = parseSensitivePaths('internal/auth/, go.mod, ./cmd/server/main.go');
+  assert.deepEqual(goService, ['internal/auth/', 'go.mod', 'cmd/server/main.go']);
+  assert.equal(floorRisk(['internal/auth/token.go'], goService), 'HIGH');
+  assert.equal(floorRisk(['go.mod'], goService), 'HIGH');
+  assert.equal(floorRisk(['cmd/server/main.go'], goService), 'HIGH');
+  // demo-service's defaults no longer apply...
+  assert.equal(floorRisk(['src/auth.js', 'package.json'], goService), 'LOW');
+  // ...but CI config and env files always do.
+  assert.equal(floorRisk(['.github/workflows/ci.yml'], goService), 'HIGH');
+  assert.equal(floorRisk(['deploy/.env.production'], goService), 'HIGH');
+});
+
+test('an unset or empty SENSITIVE_PATHS means the defaults', () => {
+  assert.equal(parseSensitivePaths(undefined), DEFAULT_SENSITIVE_PATHS);
+  assert.equal(parseSensitivePaths(' , '), DEFAULT_SENSITIVE_PATHS);
+});
+
+test('a file entry matches only that file, a folder entry everything under it', () => {
+  const paths = parseSensitivePaths('auth.go,secrets/');
+  assert.equal(floorRisk(['auth.go'], paths), 'HIGH');
+  assert.equal(floorRisk(['auth.go.bak', 'pkg/auth.go'], paths), 'LOW');
+  assert.equal(floorRisk(['secrets/keys/a.pem'], paths), 'HIGH');
+  assert.equal(floorRisk(['secretsfile'], paths), 'LOW');
 });
