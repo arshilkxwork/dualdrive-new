@@ -32,6 +32,19 @@ test('parseSse reads frames split across chunks and skips keepalives', async () 
   assert.deepEqual(frames[1].data.payload, { addressed: true });
 });
 
+test('parseSse skips a frame that is not JSON and keeps reading', async () => {
+  const frames: Frame[] = [];
+  const body = streamOf([
+    'event: message\ndata: not json\n\n',
+    'id: 7\nevent: message\ndata: {"room_id":"r1"}\n\n',
+  ]);
+  for await (const frame of parseSse(body)) {
+    frames.push(frame);
+  }
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].id, '7');
+});
+
 test('senderMatches by participant id exactly, or by name ignoring case', () => {
   assert.equal(senderMatches(['@switch-user-a:local'], '@switch-user-a:local', 'Alice'), true);
   assert.equal(senderMatches(['@switch-user-a:local'], '@switch-user-b:local', 'Alice'), false);

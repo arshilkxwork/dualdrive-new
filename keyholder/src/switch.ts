@@ -124,5 +124,12 @@ function parseBlock(block: string): Frame | null {
   if (data.length === 0) {
     return null;
   }
-  return { event, id, data: JSON.parse(data.join('\n')) as Record<string, unknown> };
+  // One frame that isn't JSON is dropped. Throwing here would end the
+  // stream, and with it every frame after this one until the reconnect.
+  try {
+    return { event, id, data: JSON.parse(data.join('\n')) as Record<string, unknown> };
+  } catch {
+    console.warn(`[keyholder] skipped a ${event} frame that isn't JSON`);
+    return null;
+  }
 }
