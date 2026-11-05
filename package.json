@@ -1,0 +1,13 @@
+{
+  "name": "dualdrive",
+  "private": true,
+  "description": "A Switch room where agents build and audit code and only named reviewers can merge it.",
+  "scripts": {
+    "postinstall": "npm --prefix keyholder ci",
+    "test": "npm --prefix demo-service test && npm --prefix audit test && npm --prefix keyholder test",
+    "typecheck": "npm --prefix keyholder run typecheck"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

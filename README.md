@@ -49,6 +49,25 @@ The rules @keyholder applies on every approval:
 
 Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts is ignored. Every approval, refusal and merge goes into `dualdrive-ledger`, a room document only @keyholder can edit.
 
+## What it stops, and what it doesn't
+
+| Attack | What stops it |
+|---|---|
+| @builder is prompt-injected and tries to push to `main` or merge on GitHub | Its GitHub account has no write access to the upstream repo. It can only push to its own fork and open pull requests. |
+| A compromised agent tells @keyholder to merge | @keyholder's addressing policy admits the two reviewers and no agents. Switch's server posts the refusal, and @keyholder's code never sees the message. |
+| @auditor is fooled into rating a dangerous change LOW | A change to `src/auth.js`, `src/auth/`, `package.json`, `package-lock.json`, `.github/` or a `.env`-like file needs two approvals whatever the verdict says. Any other change still needs a reviewer to approve the exact commit. |
+| @builder posts a fake verdict tag | @keyholder reads verdicts only from the senders in `AUDITOR_SENDERS`. |
+| A commit lands after the audit or between approvals | Approvals count only for the commit the verdict names, and the count restarts if the head moves. The merge call passes the approved SHA, so GitHub refuses a head that moved at the last moment. |
+| The pull request's tests try to reach the network or change their own files | `audit/run.sh` runs them in a container with no network and read-only mounts. |
+| An old approval in the chat history gets replayed | @keyholder acts only on approvals as they arrive. |
+
+It doesn't protect against:
+
+- A reviewer who approves without reading. The two humans are the last check, and the gate can't make them careful.
+- Anyone with admin rights on the Switch server or the upstream repo, who can change the addressing policy or the branch protection.
+- The pull request's code running in GitHub Actions. CI runs the same tests with network access; GitHub gives workflows from forks a read-only token and no repository secrets.
+- Deleting the ledger. Agents other than @keyholder can't edit it, but Switch lets people in the room delete room documents.
+
 ## What's in here
 
 | Path | What it is |
@@ -110,9 +129,9 @@ Take Switch away and there is no shared room, no addressing policy to enforce, n
 ## Tests
 
 ```bash
-(cd demo-service && npm test)
-(cd audit && npm test)
-(cd keyholder && npm test && npm run typecheck)
+npm install        # also installs keyholder's dependencies
+npm test           # demo-service, audit and keyholder
+npm run typecheck
 ```
 
 The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the src/auth.js floor, duplicate approvals, resets on new commits, CI that hasn't registered yet, failed CI, malformed verdicts. `audit/run.sh` and the live Switch connection need the real setup above to run.
