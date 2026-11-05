@@ -39,6 +39,8 @@ test('isEnvFile allows .env.example', () => {
   assert.equal(isEnvFile('.env'), true);
   assert.equal(isEnvFile('.env.local'), true);
   assert.equal(isEnvFile('.env.example'), false);
+  assert.equal(isEnvFile('.envrc'), true);
+  assert.equal(isEnvFile('.environment'), false);
 });
 
 test('summarizeTests reads the TAP counts', () => {
