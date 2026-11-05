@@ -36,7 +36,7 @@ function setup() {
     github,
     { post: async (body) => void posts.push(body), record: async (line) => void ledger.push(line) },
     { approvals: {} },
-    { auditorHandle: 'auditor', ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
+    { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
   );
   const verdict = (risk: string, sha = A) =>
     gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "${risk}", "head_sha": "${sha}"} -->`)!);
@@ -57,7 +57,7 @@ test('a MEDIUM verdict on src/auth.js needs two people, and the same person twic
   const { gate, posts, verdict, github, ledger } = setup();
   verdict('MEDIUM');
   await gate.handleApproval(1, alice);
-  assert.match(posts.at(-1)!, /1 of 2, rated MEDIUM by @auditor, raised to HIGH because it changes src\/auth\.js/);
+  assert.match(posts.at(-1)!, /1 of 2, rated MEDIUM by the auditor, raised to HIGH because it changes src\/auth\.js/);
   await gate.handleApproval(1, alice);
   assert.match(posts.at(-1)!, /Already counted alice's approval for #1 \(1 of 2\)/);
   assert.deepEqual(github.merged, []);
@@ -144,4 +144,81 @@ test('a GitHub error is reported, not thrown', async () => {
   };
   await gate.handleApproval(1, alice);
   assert.match(posts.at(-1)!, /couldn't check #1 on GitHub.*Bad credentials/);
+});
+
+test('a GitHub failure after the approval is counted says it was counted', async () => {
+  const { gate, posts, verdict, github } = setup();
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.listCheckRuns = async () => {
+    throw new Error('API rate limit exceeded');
+  };
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /approvals for #1 stand \(1 of 1\).*rate limit.*Approve again to retry/);
+  assert.ok(!posts.some((post) => /nothing was counted/.test(post)));
+  github.runs = [[{ status: 'completed', conclusion: 'success' }]];
+  github.listCheckRuns = FakeGitHub.prototype.listCheckRuns;
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(github.merged, [A]);
+});
+
+test('a merge GitHub refuses is reported as a refusal', async () => {
+  const { gate, posts, verdict, github } = setup();
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.merge = async () => {
+    throw new Error('Required status check "test" is expected');
+  };
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /GitHub refused to merge #1: Required status check/);
+});
+
+test('nothing the gate posts mentions anyone with an @', async () => {
+  const runs: string[][] = [];
+  for (const risk of ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']) {
+    const { gate, posts, verdict } = setup();
+    await gate.handleApproval(1, alice);
+    verdict(risk);
+    await gate.handleApproval(1, alice);
+    await gate.handleApproval(1, bob);
+    runs.push(posts);
+  }
+  const { gate, posts, github } = setup();
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${B}"} -->`)!);
+  await gate.handleApproval(1, alice);
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}",} -->`)!);
+  await gate.handleApproval(1, alice);
+  github.pull.merged = true;
+  await gate.handleApproval(1, alice);
+  runs.push(posts);
+  const withMention = runs.flat().filter((post) => post.includes('@'));
+  assert.deepEqual(withMention, []);
+});
+
+test('a failure after the approval is saved says it was saved', async () => {
+  const github = new FakeGitHub();
+  github.paths = ['README.md'];
+  github.runs = [[{ status: 'completed', conclusion: 'failure' }]];
+  const posts: string[] = [];
+  let failed = false;
+  const state = { approvals: {} as Record<string, { headSha: string; reviewers: string[] }> };
+  const gate = new Gate(
+    github,
+    {
+      post: async (body) => {
+        if (!failed && body.startsWith('Approval from')) {
+          failed = true;
+          throw new Error('Switch is unreachable');
+        }
+        posts.push(body);
+      },
+      record: async () => {},
+    },
+    state,
+    { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
+  );
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!);
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /alice's approval for #1 is recorded, but something failed after that: Switch is unreachable/);
+  assert.deepEqual(state.approvals[1].reviewers, [alice.key]);
 });

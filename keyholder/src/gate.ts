@@ -1,5 +1,9 @@
 // The merge gate's decisions. GitHub and the room are passed in, so the
 // whole flow can be tested without either.
+//
+// Nothing posted here contains an @handle. A mention from @keyholder would
+// address that participant: the auditor would be woken for nothing, and a
+// mention of @keyholder itself would be refused by Switch on its behalf.
 
 import {
   ciState,
@@ -8,6 +12,7 @@ import {
   isSensitivePath,
   requiredApprovals,
   type CheckRun,
+  type CiState,
   type ParsedVerdict,
 } from './rules.ts';
 
@@ -42,7 +47,6 @@ export interface GateState {
 }
 
 export interface GateOptions {
-  auditorHandle: string;
   ciPollMs: number;
   ciTimeoutMs: number;
   sleep?: (ms: number) => Promise<void>;
@@ -80,15 +84,18 @@ export class Gate {
     return next;
   }
 
-  private get auditor(): string {
-    return `@${this.options.auditorHandle}`;
-  }
-
   private async approve(pr: number, reviewer: Reviewer): Promise<void> {
     try {
       await this.evaluate(pr, reviewer);
     } catch (error) {
-      await this.room.post(`I couldn't check #${pr} on GitHub, so nothing was counted: ${describe(error)}`);
+      // Say whether the approval was saved: the failure can come before or
+      // after it was counted.
+      const counted = this.state.approvals[pr]?.reviewers.includes(reviewer.key) ?? false;
+      await this.room.post(
+        counted
+          ? `${reviewer.label}'s approval for #${pr} is recorded, but something failed after that: ${describe(error)}`
+          : `I couldn't check #${pr} on GitHub, so nothing was counted: ${describe(error)}`,
+      );
     }
   }
 
@@ -105,13 +112,13 @@ export class Gate {
 
     const verdict = this.verdicts.get(pr);
     if (!verdict) {
-      await this.room.post(`No audit verdict yet for #${pr}. Waiting for ${this.auditor}; this approval wasn't counted.`);
+      await this.room.post(`No audit verdict yet for #${pr}. Waiting for the auditor; this approval wasn't counted.`);
       return;
     }
     if (verdict.kind === 'malformed') {
       if (verdict.headSha === null || verdict.headSha === pull.headSha) {
         await this.room.post(
-          `${this.auditor}'s latest verdict for #${pr} can't be read (${verdict.reason}). ` +
+          `The auditor's latest verdict for #${pr} can't be read (${verdict.reason}). ` +
             `Treating #${pr} as CRITICAL: nothing merges until a valid verdict for ${short(pull.headSha)} is posted.`,
         );
         await this.room.record(`#${pr} ${short(pull.headSha)}: unreadable verdict, treated as CRITICAL`);
@@ -132,14 +139,14 @@ export class Gate {
     if (!Number.isFinite(required)) {
       await this.room.post(
         `#${pr} is rated CRITICAL at ${short(pull.headSha)}. DualDrive won't merge it; ` +
-          `push a fix and ask ${this.auditor} for a new verdict.`,
+          `push a fix and ask the auditor for a new verdict.`,
       );
       return;
     }
     let ratedAs = `rated ${risk}`;
     if (risk !== verdict.verdict.risk) {
       const reason = paths.find(isSensitivePath);
-      ratedAs = `rated ${verdict.verdict.risk} by ${this.auditor}, raised to ${risk} because it changes ${reason}`;
+      ratedAs = `rated ${verdict.verdict.risk} by the auditor, raised to ${risk} because it changes ${reason}`;
     }
 
     let approvals: GateState['approvals'][string] | undefined = this.state.approvals[pr];
@@ -170,29 +177,33 @@ export class Gate {
 
   private async postStale(pr: number): Promise<void> {
     await this.room.post(
-      `The audit for #${pr} is stale: the pull request has moved since ${this.auditor}'s verdict. ` +
+      `The audit for #${pr} is stale: the pull request has moved since the auditor's verdict. ` +
         `Waiting for a fresh audit before this approval counts.`,
     );
   }
 
+  // Runs only once the approvals are saved, so every failure here leaves them
+  // standing. Approving again retries.
   private async merge(pr: number, approvedSha: string, count: number, required: number): Promise<void> {
-    const current = await this.github.getPull(pr);
-    if (current.headSha !== approvedSha) {
-      delete this.state.approvals[pr];
-      this.saveState();
-      await this.room.post(`#${pr} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
+    let current: PullRequest;
+    let ci: CiState;
+    try {
+      current = await this.github.getPull(pr);
+      if (current.headSha !== approvedSha) {
+        delete this.state.approvals[pr];
+        this.saveState();
+        await this.room.post(`#${pr} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
+        return;
+      }
+      ci = await this.waitForCi(pr, approvedSha, count, required);
+    } catch (error) {
+      await this.room.post(
+        `The approvals for #${pr} stand (${count} of ${required}), but checking it on GitHub before merging failed: ` +
+          `${describe(error)}. Approve again to retry.`,
+      );
       return;
     }
 
-    let ci = ciState(await this.github.listCheckRuns(approvedSha));
-    if (ci === 'pending') {
-      await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging #${pr}.`);
-      const polls = Math.ceil(this.options.ciTimeoutMs / this.options.ciPollMs);
-      for (let i = 0; i < polls && ci === 'pending'; i++) {
-        await this.sleep(this.options.ciPollMs);
-        ci = ciState(await this.github.listCheckRuns(approvedSha));
-      }
-    }
     if (ci === 'failed') {
       await this.room.post(`CI failed on ${short(approvedSha)}, so #${pr} isn't being merged.`);
       await this.room.record(`#${pr} ${short(approvedSha)}: not merged, CI failed`);
@@ -217,6 +228,19 @@ export class Gate {
       await this.room.post(`GitHub refused to merge #${pr}: ${describe(error)}`);
       await this.room.record(`#${pr} ${short(approvedSha)}: merge refused by GitHub`);
     }
+  }
+
+  private async waitForCi(pr: number, sha: string, count: number, required: number): Promise<CiState> {
+    let ci = ciState(await this.github.listCheckRuns(sha));
+    if (ci === 'pending') {
+      await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging #${pr}.`);
+      const polls = Math.ceil(this.options.ciTimeoutMs / this.options.ciPollMs);
+      for (let i = 0; i < polls && ci === 'pending'; i++) {
+        await this.sleep(this.options.ciPollMs);
+        ci = ciState(await this.github.listCheckRuns(sha));
+      }
+    }
+    return ci;
   }
 
   private saveState(): void {
