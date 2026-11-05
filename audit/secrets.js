@@ -7,7 +7,7 @@
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isEntryPoint } from './entry.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const SKIP_DIRS = new Set(['.git', 'node_modules']);
@@ -94,7 +94,7 @@ function fromGitleaks(reportPath, root) {
   }));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const args = process.argv.slice(2);
   let output;
   if (args[0] === '--from-gitleaks') {

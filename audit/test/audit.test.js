@@ -1,8 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { scanDir, scanText, isEnvFile } from '../secrets.js';
 import { summarizeTests, summarizeNpmAudit, changedPaths } from '../report.js';
 
@@ -60,4 +62,30 @@ test('changedPaths includes the old name of a renamed file', () => {
     { filename: 'test/auth.test.js' },
   ]);
   assert.deepEqual(paths, ['src/auth.js', 'src/login.js', 'test/auth.test.js']);
+});
+
+test('the scripts still run when called through a symlinked path', () => {
+  const auditDir = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+  const root = mkdtempSync(join(tmpdir(), 'dualdrive-link-'));
+  try {
+    const linked = join(root, 'audit');
+    symlinkSync(auditDir, linked);
+    const scanned = execFileSync(process.execPath, [join(linked, 'secrets.js'), join(root, 'audit', 'test')], {
+      encoding: 'utf8',
+    });
+    assert.equal(JSON.parse(scanned).scanner, 'builtin');
+
+    const out = join(root, 'out');
+    mkdirSync(out);
+    writeFileSync(join(out, 'tests.log'), '# pass 1\n# fail 0\n');
+    writeFileSync(join(out, 'secrets.json'), '{"scanner":"builtin","findings":[]}');
+    writeFileSync(join(out, 'npm-audit.json'), '{"skipped":"no package-lock.json"}');
+    writeFileSync(join(out, 'files.json'), '[{"filename":"src/auth.js"}]');
+    const report = execFileSync(process.execPath, [join(linked, 'report.js'), out, '4', 'a'.repeat(40), '0'], {
+      encoding: 'utf8',
+    });
+    assert.deepEqual(JSON.parse(report).changedPaths, ['src/auth.js']);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

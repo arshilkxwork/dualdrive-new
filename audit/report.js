@@ -4,7 +4,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isEntryPoint } from './entry.js';
 
 export function summarizeTests(log, exitCode) {
   const count = (label) => {
@@ -47,7 +47,7 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isEntryPoint(import.meta.url)) {
   const [outDir, pr, headSha, testExit] = process.argv.slice(2);
   const report = {
     pr: Number(pr),
