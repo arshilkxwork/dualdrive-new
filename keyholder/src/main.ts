@@ -1,23 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { loadConfig, senderMatches } from './config.ts';
+import { loadConfig } from './config.ts';
 import { Gate, type GateState } from './gate.ts';
 import { createGitHub } from './github.ts';
+import { readMessage, type MessagePayload } from './inbox.ts';
 import { Room } from './room.ts';
-import { parseApproval, parseVerdictTag } from './rules.ts';
 import { SwitchClient, type Frame } from './switch.ts';
 
 interface Persisted {
   connectionId?: string;
   approvals?: GateState['approvals'];
-}
-
-interface MessagePayload {
-  message_id?: string;
-  sender?: string;
-  sender_name?: string;
-  body?: string;
-  addressed?: boolean;
 }
 
 interface ContextEntry {
@@ -49,7 +41,6 @@ save();
 const client = new SwitchClient(config.bridgeUrl, config.agentId, config.apiKey, connectionId);
 const room = new Room(client, config.roomId);
 const gate = new Gate(createGitHub(config.githubToken, config.owner, config.repo), room, state, {
-  auditorHandle: config.auditorHandle,
   ciPollMs: 3000,
   ciTimeoutMs: 30000,
   onStateChange: save,
@@ -74,38 +65,25 @@ function handleMessage(payload: MessagePayload, live: boolean): void {
   if (!firstTime(payload.message_id)) {
     return;
   }
-  const sender = payload.sender ?? '';
-  const senderName = payload.sender_name ?? '';
-  const body = payload.body ?? '';
-
-  // Verdicts count only from the auditor. Anyone else posting a tag, @builder
-  // included, is ignored.
-  if (senderMatches(config.auditors, sender, senderName)) {
-    const verdict = parseVerdictTag(body);
-    if (verdict) {
-      gate.recordVerdict(verdict);
-      const pr = verdict.kind === 'valid' ? verdict.verdict.pr : verdict.pr;
-      console.log(`[keyholder] ${verdict.kind} verdict for #${pr} from ${senderName}`);
+  const from = `${payload.sender_name ?? ''} (${payload.sender ?? ''})`;
+  for (const action of readMessage(payload, live, config)) {
+    switch (action.kind) {
+      case 'verdict': {
+        gate.recordVerdict(action.verdict);
+        const pr = action.verdict.kind === 'valid' ? action.verdict.verdict.pr : action.verdict.pr;
+        console.log(`[keyholder] ${action.verdict.kind} verdict for #${pr} from ${from}`);
+        break;
+      }
+      case 'approve':
+        console.log(`[keyholder] approval for #${action.pr} from ${from}`);
+        void gate.handleApproval(action.pr, action.reviewer).catch(logError);
+        break;
+      case 'reply':
+        console.log(`[keyholder] replying to ${from}`);
+        void room.post(action.body).catch(logError);
+        break;
     }
   }
-
-  // Approvals are acted on only as they happen, never replayed from history,
-  // and only when Switch says the message addressed @keyholder: that is
-  // where its addressing policy has already let the sender through.
-  if (!live || payload.addressed !== true) {
-    return;
-  }
-  const pr = parseApproval(body, config.handle);
-  if (pr === null) {
-    return;
-  }
-  console.log(`[keyholder] approval for #${pr} from ${senderName} (${sender})`);
-  // A backstop for a misconfigured addressing policy.
-  if (!senderMatches(config.reviewers, sender, senderName)) {
-    void room.post(`I only act on approvals from ${config.reviewers.join(' and ')}.`).catch(logError);
-    return;
-  }
-  void gate.handleApproval(pr, { key: sender || senderName, label: senderName || sender }).catch(logError);
 }
 
 // Picks up anything posted before this connection opened, such as a verdict

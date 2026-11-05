@@ -33,7 +33,6 @@ export interface Config {
   apiKey: string;
   roomId: string;
   handle: string;
-  auditorHandle: string;
   auditors: string[];
   reviewers: string[];
   githubToken: string;
@@ -54,7 +53,6 @@ export function loadConfig(): Config {
     apiKey: required('KEYHOLDER_API_KEY'),
     roomId: required('DUALDRIVE_ROOM_ID'),
     handle: process.env.KEYHOLDER_HANDLE?.trim() || 'keyholder',
-    auditorHandle: process.env.AUDITOR_HANDLE?.trim() || 'auditor',
     auditors: list('AUDITOR_SENDERS'),
     reviewers: list('REVIEWER_SENDERS'),
     githubToken: required('GITHUB_TOKEN'),

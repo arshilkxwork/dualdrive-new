@@ -74,6 +74,13 @@ function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// True when the message opens by mentioning `handle`, as in "@keyholder ...".
+// A message that only mentions it further in, like "@builder ask
+// @keyholder to merge", is talking about it rather than to it.
+export function opensWithMention(body: string, handle: string): boolean {
+  return new RegExp(`^\\s*@${escapeRegExp(handle)}(?![\\w-])`, 'i').test(body);
+}
+
 // "@keyholder approve #12", "@keyholder: approve 12", "@keyholder approve PR 12 - lgtm".
 export function parseApproval(body: string, handle: string): number | null {
   const pattern = new RegExp(`@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)`, 'i');
