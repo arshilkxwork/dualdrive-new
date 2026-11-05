@@ -21,6 +21,30 @@ PR_NUM="${1:-}"
 : "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — don't guess it from the local checkout, this script doesn't run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
 : "${GITHUB_TOKEN:?Set GITHUB_TOKEN in .env}"
+
+# An agent may run this without your shell's startup files, and so without the
+# PATH entries Docker Desktop and nvm add there. Look in their usual places
+# before giving up.
+find_tool() {
+  local name="$1" dir
+  shift
+  command -v "$name" >/dev/null 2>&1 && return 0
+  for dir in "$@"; do
+    if [ -n "$dir" ] && [ -x "$dir/$name" ]; then
+      PATH="$dir:$PATH"
+      return 0
+    fi
+  done
+  die "can't find $name. Put it on the PATH of whatever runs this script."
+}
+newest_nvm_bin() {
+  ls -d "$HOME"/.nvm/versions/node/v*/bin 2>/dev/null | sort -V | tail -1
+}
+for tool in git curl; do
+  find_tool "$tool" /usr/bin /opt/homebrew/bin /usr/local/bin
+done
+find_tool node "${NVM_BIN:-}" "$(newest_nvm_bin)" "$HOME/.volta/bin" /opt/homebrew/bin /usr/local/bin
+find_tool docker "$HOME/.docker/bin" /Applications/Docker.app/Contents/Resources/bin /usr/local/bin /opt/homebrew/bin
 docker info >/dev/null 2>&1 || die "Docker isn't running; start Docker Desktop first"
 
 TMPDIR=$(mktemp -d /tmp/dualdrive-audit-XXXXXX)
