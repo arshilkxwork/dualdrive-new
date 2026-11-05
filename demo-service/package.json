@@ -1,0 +1,13 @@
+{
+  "name": "demo-service",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A tiny auth module that DualDrive's agents work on.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

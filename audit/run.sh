@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Deterministic checks for one pull request on demo-service: the tests in a
+# container with no network, a secret scan, a dependency audit, and the list
+# of changed files. Prints one JSON line for @auditor to read.
+#
+# Usage: audit/run.sh <pr-number>
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for candidate in "$SCRIPT_DIR/../.env" ".env"; do
+  if [ -f "$candidate" ]; then
+    set -a; source "$candidate"; set +a
+    break
+  fi
+done
+
+die() { echo "audit/run.sh: $*" >&2; exit 2; }
+
+PR_NUM="${1:-}"
+[[ "$PR_NUM" =~ ^[0-9]+$ ]] || die "usage: audit/run.sh <pr-number>"
+: "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — don't guess it from the local checkout, this script doesn't run from inside demo-service}"
+: "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
+: "${GITHUB_TOKEN:?Set GITHUB_TOKEN in .env}"
+docker info >/dev/null 2>&1 || die "Docker isn't running; start Docker Desktop first"
+
+TMPDIR=$(mktemp -d /tmp/dualdrive-audit-XXXXXX)
+trap 'rm -rf "$TMPDIR"' EXIT
+CLONE="$TMPDIR/repo"
+OUT="$TMPDIR/out"
+mkdir -p "$OUT"
+
+# Builder's branch lives on its fork. refs/pull/<n>/head exists on the
+# upstream repo for every pull request, whichever fork it came from.
+git clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
+git -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
+git -C "$CLONE" checkout --quiet "pr-$PR_NUM"
+HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
+
+# Tests. package.json is mounted with src/ and test/ because Node reads its
+# "type": "module" to decide that .js files are ES modules.
+set +e
+docker run --rm --network none \
+  -v "$CLONE/package.json":/w/package.json:ro \
+  -v "$CLONE/src":/w/src:ro \
+  -v "$CLONE/test":/w/test:ro \
+  -w /w node:22 node --test >"$OUT/tests.log" 2>&1
+TEST_EXIT=$?
+set -e
+
+# Secrets.
+if command -v gitleaks >/dev/null 2>&1; then
+  set +e
+  gitleaks detect --no-git --source "$CLONE" --redact --report-format json \
+    --report-path "$OUT/gitleaks.json" >/dev/null 2>&1
+  set -e
+  node "$SCRIPT_DIR/secrets.js" --from-gitleaks "$OUT/gitleaks.json" "$CLONE" >"$OUT/secrets.json"
+else
+  node "$SCRIPT_DIR/secrets.js" "$CLONE" >"$OUT/secrets.json"
+fi
+
+# Dependencies. npm audit needs a lockfile; with none there's nothing it can
+# check, which is the case while demo-service has no dependencies.
+if [ -f "$CLONE/package-lock.json" ]; then
+  set +e
+  (cd "$CLONE" && npm audit --audit-level=high --json) >"$OUT/npm-audit.json" 2>/dev/null
+  set -e
+else
+  echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
+fi
+
+# Changed files, from the same API call @keyholder makes for its floor check.
+# A local git diff can't work here: both refs were fetched at depth 1 and
+# share no reachable merge base.
+curl -fsS \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/vnd.github+json" \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100" \
+  >"$OUT/files.json"
+
+node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT"

@@ -1,0 +1,23 @@
+{
+  "name": "dualdrive-keyholder",
+  "private": true,
+  "type": "module",
+  "description": "The merge agent: a plain service in a Switch room that merges only what the named reviewers approved.",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "register": "tsx src/register.ts",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

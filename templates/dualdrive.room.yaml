@@ -1,0 +1,134 @@
+# DualDrive: @builder writes the code, @auditor checks it, and @keyholder
+# merges only what the two named reviewers approved.
+#
+# Run it from Switch Console (Templates, Create from template). It creates
+# @builder and @auditor as Console-run agents and the room they share with
+# @keyholder and the reviewers. @keyholder is not created here: it is a plain
+# service registered on its own (see the README), referenced by name.
+version: 1
+
+params:
+  upstream_repo:
+    type: string
+    description: The demo-service repo the bot account owns, e.g. https://github.com/dualdrive-keyholder/demo-service
+  builder_fork:
+    type: string
+    description: Your fork of it, which @builder pushes branches to
+  audit_script:
+    type: string
+    description: Absolute path to audit/run.sh in this project, e.g. /Users/you/Desktop/dualdrive/audit/run.sh
+  keyholder:
+    type: agent
+    description: The registered @keyholder service
+    default: keyholder
+  reviewer_a:
+    type: user
+    description: First reviewer's username in the chat app
+  reviewer_b:
+    type: user
+    description: Second reviewer's username in the chat app
+  builder_provider:
+    type: provider
+    description: Coding agent behind @builder
+    default: [claude, codex, opencode]
+    input: advanced
+  auditor_provider:
+    type: provider
+    description: Coding agent behind @auditor. A different one from @builder's, where installed, so the review isn't the same model checking itself.
+    default: [codex, claude, opencode]
+    input: advanced
+  location:
+    type: location
+    description: Computer that runs @builder and @auditor
+    default: local
+    input: advanced
+  directory:
+    type: directory
+    description: Folder each agent clones and works in
+    default: "{$agents_dir}/{agent}"
+    input: advanced
+  bridge:
+    type: bridge
+    description: Chat app the room lives in
+    default: [$first]
+
+agents:
+  - name: builder
+    description: Writes code on a branch of its fork and opens pull requests
+    addressing: anyone
+    provider: "{builder_provider}"
+    location: "{location}"
+    directory: "{directory}"
+    instructions: |
+      You write code for demo-service. Work in a clone of your fork,
+      {builder_fork}, with {upstream_repo} as the `upstream` remote.
+
+      For each request from a reviewer:
+      1. Branch from upstream/main, make the smallest change that does it,
+         and run `npm test` before pushing.
+      2. Push the branch to your fork and open a pull request against
+         {upstream_repo} with `gh pr create --repo {upstream_repo}`.
+      3. Post the pull request number and link, then ask @auditor to review
+         it, by that literal handle.
+
+      You cannot merge, and you never try to: the upstream repo gives your
+      account no write access. When you notify or delegate to anyone in the
+      room, write their literal @handle (@auditor, @keyholder), never a
+      paraphrase like "the keyholder".
+
+  - name: auditor
+    description: Runs the deterministic checks on a pull request and posts a verdict
+    addressing: anyone
+    provider: "{auditor_provider}"
+    location: "{location}"
+    directory: "{directory}"
+    instructions: |
+      You review pull requests on {upstream_repo}. You never change code.
+
+      When asked to review pull request N:
+      1. Run `{audit_script} N`. It prints one JSON line with the test
+         results, secret findings, dependency audit, changed files and
+         `head_sha`, the full 40-character commit it tested.
+      2. Read the diff: `gh pr diff N --repo {upstream_repo}`.
+      3. Decide a risk level: LOW, MEDIUM, HIGH or CRITICAL. Check at least
+         CWE-306 (missing authentication for a critical function), CWE-798
+         (hard-coded credentials) and CWE-208 (timing-dependent comparison
+         of secrets). Failing tests or any secret finding is at least HIGH.
+         Anything that skips or weakens authentication is CRITICAL.
+      4. Post your verdict. The message must start with this tag, on its own
+         line, with the exact head_sha from step 1 and never a shortened one:
+
+         <!-- DUALDRIVE_VERDICT: {"pr": N, "risk": "LEVEL", "head_sha": "FULL_SHA", "cwe": ["CWE-…"]} -->
+
+         Then one plain line people can read, for example:
+         🛡️ CRITICAL: CWE-306, line 12 skips token verification entirely.
+         Then the evidence: the lines you mean and what the checks printed.
+
+      If the script fails, say so and post no verdict. Never invent a result
+      you did not run.
+
+room:
+  name: dualdrive
+  description: "@builder writes, @auditor checks, @keyholder merges what the reviewers approve"
+  bridge: "{bridge}"
+  agents: [builder, auditor, "{keyholder}"]
+  users: ["{$creator}", "{reviewer_a}", "{reviewer_b}"]
+  instructions: |
+    This room changes {upstream_repo} under a two-key rule.
+
+    - @builder writes code on its fork and opens pull requests. It can't
+      merge.
+    - @auditor runs fixed checks on each pull request and posts a verdict
+      tagged with the commit it checked.
+    - @keyholder is not an AI. It merges a pull request when enough of the
+      named reviewers ({reviewer_a}, {reviewer_b}) approve the exact commit
+      the verdict covers: "@keyholder approve #N". LOW and MEDIUM need one
+      approval, HIGH needs two, CRITICAL is never merged. Changes to
+      src/auth.js, package.json or CI files count as at least HIGH whatever
+      the verdict says. Only those reviewers can address @keyholder; Switch
+      refuses anyone else, agents included.
+
+kickoff: |
+  @builder @auditor: this is the DualDrive room for {upstream_repo}.
+  @builder, say in one line how you'll hand pull requests to @auditor.
+  @auditor, say in one line what you check.
