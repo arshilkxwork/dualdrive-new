@@ -47,6 +47,9 @@ test('src/auth.js itself raises the floor', () => {
   assert.equal(floorRisk(['package.json']), 'HIGH');
   assert.equal(floorRisk(['.github/workflows/test.yml']), 'HIGH');
   assert.equal(floorRisk(['config/.env.production']), 'HIGH');
+  assert.equal(floorRisk(['.envrc']), 'HIGH');
+  assert.equal(floorRisk(['.env/secrets.json']), 'HIGH');
+  assert.equal(floorRisk(['.environment', 'docs/env-guide.md', 'src/environment.js']), 'LOW');
   assert.equal(floorRisk(['README.md', 'test/auth.test.js']), 'LOW');
 });
 

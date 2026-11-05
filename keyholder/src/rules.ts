@@ -97,7 +97,8 @@ export function isSensitivePath(path: string): boolean {
     path === 'package.json' ||
     path === 'package-lock.json' ||
     path.startsWith('.github/') ||
-    /(^|\/)\.env/i.test(path)
+    // .env, .env.local and the like, and direnv's .envrc; not .environment.
+    /(^|\/)\.env(rc)?(\.|\/|$)/i.test(path)
   );
 }
 

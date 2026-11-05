@@ -59,7 +59,7 @@ export function scanDir(root) {
 }
 
 export function isEnvFile(name) {
-  return (name === '.env' || name.startsWith('.env.')) && name !== '.env.example';
+  return (name === '.env' || name === '.envrc' || name.startsWith('.env.')) && name !== '.env.example';
 }
 
 function* walk(dir) {
