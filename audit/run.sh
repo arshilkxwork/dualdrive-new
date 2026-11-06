@@ -6,21 +6,25 @@
 # Usage: audit/run.sh <pr-number>
 set -euo pipefail
 
+die() { echo "audit/run.sh: $*" >&2; exit 2; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 for candidate in "$SCRIPT_DIR/../.env" ".env"; do
   if [ -f "$candidate" ]; then
+    # @auditor runs this script as your user, so it can read any file the
+    # script reads. keyholder's merge token and Switch key must not be in it.
+    if grep -qE '^[[:space:]]*(export[[:space:]]+)?(GITHUB_TOKEN|KEYHOLDER_API_KEY|SWITCH_REGISTRATION_TOKEN)=[^[:space:]#]' "$candidate"; then
+      die "$candidate holds keyholder's secrets, which the agents can read. Move them to keyholder's own .env (README, setup step 4)."
+    fi
     set -a; source "$candidate"; set +a
     break
   fi
 done
 
-die() { echo "audit/run.sh: $*" >&2; exit 2; }
-
 PR_NUM="${1:-}"
 [[ "$PR_NUM" =~ ^[0-9]+$ ]] || die "usage: audit/run.sh <pr-number>"
 : "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — don't guess it from the local checkout, this script doesn't run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
-: "${GITHUB_TOKEN:?Set GITHUB_TOKEN in .env}"
 
 # An agent may run this without your shell's startup files, and so without the
 # PATH entries Docker Desktop and nvm add there. Look in their usual places
@@ -101,13 +105,26 @@ else
   echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
 fi
 
-# Changed files, from the same API call @keyholder makes for its floor check.
-# A local git diff can't work here: both refs were fetched at depth 1 and
-# share no reachable merge base.
-curl -fsS \
-  -H "Authorization: Bearer $GITHUB_TOKEN" \
-  -H "Accept: application/vnd.github+json" \
-  "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100" \
-  >"$OUT/files.json"
+# Changed files, from the same API call @keyholder makes for its floor check,
+# every page of it. A local git diff can't work here: both refs were fetched
+# at depth 1 and share no reachable merge base. demo-service is public, so a
+# token is optional; AUDIT_GITHUB_TOKEN, a read-only one, only raises the
+# rate limit.
+AUTH=()
+if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
+  AUTH=(-H "Authorization: Bearer $AUDIT_GITHUB_TOKEN")
+fi
+page=1
+while :; do
+  curl -fsS ${AUTH[@]+"${AUTH[@]}"} \
+    -H "Accept: application/vnd.github+json" \
+    "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
+    >"$OUT/files-$page.json"
+  count=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).length)' "$OUT/files-$page.json")
+  [ "$count" -lt 100 ] && break
+  page=$((page + 1))
+done
+node -e 'console.log(JSON.stringify(process.argv.slice(1).flatMap((f) => JSON.parse(require("node:fs").readFileSync(f, "utf8")))))' \
+  "$OUT"/files-*.json >"$OUT/files.json"
 
 node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT"

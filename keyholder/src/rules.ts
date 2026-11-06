@@ -36,6 +36,14 @@ export function parseVerdictTag(body: string): ParsedVerdict | null {
   const headSha = shaMatch ? shaMatch[1].toLowerCase() : null;
   const malformed = (reason: string): ParsedVerdict => ({ kind: 'malformed', pr, headSha, reason });
 
+  // The auditor's own tag opens its message. One further in is something it
+  // quoted, such as a tag @builder planted in a pull request description, so
+  // it can't stand as a verdict. Malformed rather than ignored, so it can't
+  // leave an older, laxer verdict for the same commit in place either.
+  if (body.slice(0, tag.index).trim() !== '') {
+    return malformed('the tag does not open the message');
+  }
+
   let data: unknown;
   try {
     data = JSON.parse(raw);
@@ -82,8 +90,11 @@ export function opensWithMention(body: string, handle: string): boolean {
 }
 
 // "@keyholder approve #12", "@keyholder: approve 12", "@keyholder approve PR 12 - lgtm".
+// The command has to open the message. Anywhere else it is being talked
+// about or quoted ("don't let @keyholder approve #1 yet", "> @keyholder
+// approve #1"), and counting that would approve on the reviewer's behalf.
 export function parseApproval(body: string, handle: string): number | null {
-  const pattern = new RegExp(`@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)`, 'i');
+  const pattern = new RegExp(`^\\s*@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)(?!\\w)`, 'i');
   const found = body.match(pattern);
   return found ? Number(found[1]) : null;
 }
