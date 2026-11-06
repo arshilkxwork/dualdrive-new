@@ -5,6 +5,9 @@ on:
   pull_request:
 permissions:
   contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -20,4 +23,70 @@ jobs:
       # npm ci at the root also installs keyholder's dependencies (postinstall).
       - run: npm ci
       - run: npm test
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            keyholder/package-lock.json
+      - run: npm ci
       - run: npm run typecheck
+
+  # engines allows any Node from 22 up; 24 is the next LTS line.
+  node-24:
+    name: test (Node 24)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            keyholder/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  # The README's setup is macOS: keyholder runs there, and @auditor runs
+  # audit/run.sh with macOS's /bin/bash, which is 3.2.
+  macos:
+    name: test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            keyholder/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - name: audit/run.sh's guards under /bin/bash
+        run: bash scripts/run-sh-guards.sh /bin/bash
+
+  # audit/run.sh for real: Docker, the no-network test container, the secret
+  # scan, the npm config isolation and GitHub's files API. A fork's own push
+  # to main is skipped, since the fork has no pull requests for that API.
+  audit-e2e:
+    name: audit/run.sh end to end
+    if: github.event_name == 'pull_request' || !github.event.repository.fork
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: docker pull --quiet node:22
+      - run: bash scripts/audit-e2e.sh
+        env:
+          # Read-only, and only to raise the files API's rate limit.
+          AUDIT_GITHUB_TOKEN: ${{ github.token }}

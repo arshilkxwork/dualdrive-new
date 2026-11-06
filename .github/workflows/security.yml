@@ -1,0 +1,50 @@
+name: security
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Advisories appear without any change here, so look once a week too.
+  schedule:
+    - cron: '17 6 * * 1'
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  npm-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      # keyholder holds the merge token, so its dependencies matter most.
+      - run: npm audit --audit-level=high
+      - run: npm --prefix keyholder audit --audit-level=high
+
+  # New or upgraded dependencies in a pull request, before they land.
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/dependency-review-action@v5.0.0
+        with:
+          fail-on-severity: high
+
+  # The TypeScript and JavaScript, and the workflows themselves (script
+  # injection from pull request titles and the like).
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: actions, javascript-typescript
+          build-mode: none
+      - uses: github/codeql-action/analyze@v4

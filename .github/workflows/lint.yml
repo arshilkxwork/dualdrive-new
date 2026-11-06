@@ -1,0 +1,75 @@
+name: lint
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: >
+          docker run --rm -e LANG=C.UTF-8 -v "$PWD:/mnt:ro" -w /mnt
+          koalaman/shellcheck:v0.11.0 audit/run.sh scripts/*.sh
+
+  # Both workflow folders: this repo's, and the one demo-service carries to
+  # its own repo.
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: >
+          docker run --rm -v "$PWD:/repo:ro" -w /repo rhysd/actionlint:1.7.12 -color
+          .github/workflows/*.yml demo-service/.github/workflows/*.yml
+
+  # The Switch room template. Console only reports a broken one when someone
+  # tries to create a room from it.
+  yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: |
+          for file in templates/*.yaml; do
+            echo "$file"
+            npx --yes yaml@2.9.1 valid < "$file"
+          done
+
+  env-docs:
+    name: .env.example matches the code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - run: node scripts/check-env-docs.mjs
+
+  # Every commit, not only the tree: a secret added in one commit and removed
+  # in the next is still in history.
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # git refuses a repository owned by another user, and gitleaks then
+      # reports "no leaks found" having scanned nothing. safe.directory lets
+      # git read it; the grep fails the job if that ever happens anyway.
+      - shell: bash
+        run: |
+          docker run --rm \
+            -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+            -v "$PWD:/repo:ro" zricethezav/gitleaks:v8.30.1 \
+            git /repo --redact --no-banner 2>&1 | tee "$RUNNER_TEMP/gitleaks.log"
+          if grep -qE '(^|[^0-9])0 commits scanned' "$RUNNER_TEMP/gitleaks.log"; then
+            echo "gitleaks scanned no commits"
+            exit 1
+          fi

@@ -143,6 +143,34 @@ npm run typecheck
 
 The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, CI that hasn't registered yet, failed CI, malformed verdicts. `audit/run.sh` and the live Switch connection need the real setup above to run.
 
+## CI
+
+Every pull request and every push to `main` runs these. `security` also runs weekly, since new advisories don't wait for a change here.
+
+| Check | What it catches |
+|---|---|
+| `test` | `npm test` for demo-service, audit and keyholder, on the Node in `.nvmrc`. |
+| `typecheck` | `tsc --noEmit` over keyholder. |
+| `test (Node 24)` | The same tests on the next Node LTS, since `engines` allows any Node from 22 up. |
+| `test (macOS)` | The tests on macOS, where the setup runs, plus `scripts/run-sh-guards.sh`: the ways `audit/run.sh` refuses to start, under macOS's `/bin/bash` 3.2. |
+| `audit/run.sh end to end` | `scripts/audit-e2e.sh` runs `audit/run.sh` with Docker against a local copy of demo-service: a passing test, a failing one, one that tries the network, and a pull request whose `.npmrc` tries to send an environment variable to its own registry. |
+| `shellcheck` | `audit/run.sh` and `scripts/*.sh`. |
+| `actionlint` | This repo's workflows and demo-service's. |
+| `yaml` | The Switch room template parses. |
+| `.env.example matches the code` | A setting the code reads that `.env.example` doesn't list, or one it lists that nothing reads. |
+| `secret-scan` | gitleaks over every commit, not only the current tree. |
+| `npm-audit` | Known high or critical advisories in the root and keyholder dependencies. |
+| `dependency-review` | The same for dependencies a pull request adds or changes, before they land. |
+| `codeql` | CodeQL over the TypeScript and JavaScript, and over the workflows themselves. |
+
+Most of them run locally too:
+
+```bash
+node scripts/check-env-docs.mjs
+bash scripts/run-sh-guards.sh /bin/bash
+GITHUB_REPOSITORY=arshilkxwork/dualdrive bash scripts/audit-e2e.sh   # needs Docker running
+```
+
 ## Known limitations
 
 - **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped.
