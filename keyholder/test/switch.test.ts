@@ -45,6 +45,21 @@ test('parseSse skips a frame that is not JSON and keeps reading', async () => {
   assert.equal(frames[0].id, '7');
 });
 
+test('parseSse handles CRLF split across chunks without desynchronizing', async () => {
+  const frames: Frame[] = [];
+  const body = streamOf([
+    'event: connection_state\r',
+    '\ndata: {"generation": 1}\r\n\r',
+    '\n',
+  ]);
+  for await (const frame of parseSse(body)) {
+    frames.push(frame);
+  }
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].event, 'connection_state');
+  assert.deepEqual(frames[0].data, { generation: 1 });
+});
+
 test('senderMatches by participant id exactly, or by name ignoring case', () => {
   assert.equal(senderMatches(['@switch-user-a:local'], '@switch-user-a:local', 'Alice'), true);
   assert.equal(senderMatches(['@switch-user-a:local'], '@switch-user-b:local', 'Alice'), false);
