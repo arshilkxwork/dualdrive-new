@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Gate, type GitHubPort, type PullRequest } from '../src/gate.ts';
+import { Gate, type GateOptions, type GitHubPort, type PullRequest } from '../src/gate.ts';
 import { parseVerdictTag, type CheckRun } from '../src/rules.ts';
 
 const A = 'a'.repeat(40);
@@ -9,10 +9,20 @@ const alice = { key: '@switch-user-a:local', label: 'alice' };
 const bob = { key: '@switch-user-b:local', label: 'bob' };
 
 class FakeGitHub implements GitHubPort {
-  pull: PullRequest = { state: 'open', merged: false, headSha: A, url: 'https://github.com/o/r/pull/1' };
+  pull: PullRequest = {
+    state: 'open',
+    merged: false,
+    headSha: A,
+    baseRef: 'main',
+    title: 'Hash passwords with scrypt',
+    url: 'https://github.com/o/r/pull/1',
+  };
   paths = ['src/auth.js', 'test/auth.test.js'];
   runs: CheckRun[][] = [[{ status: 'completed', conclusion: 'success' }]];
   merged: string[] = [];
+  messages: string[] = [];
+  // Runs once, the first time CI is polled, to act between approval and merge.
+  onFirstCiPoll: (() => Promise<void>) | null = null;
   async getPull() {
     return { ...this.pull };
   }
@@ -20,15 +30,19 @@ class FakeGitHub implements GitHubPort {
     return this.paths;
   }
   async listCheckRuns() {
+    const hook = this.onFirstCiPoll;
+    this.onFirstCiPoll = null;
+    await hook?.();
     return this.runs.length > 1 ? this.runs.shift()! : this.runs[0];
   }
-  async merge(_pr: number, sha: string) {
+  async merge(_pr: number, sha: string, message: string) {
     this.merged.push(sha);
+    this.messages.push(message);
     return { sha: 'c'.repeat(40) };
   }
 }
 
-function setup() {
+function setup(options: Partial<GateOptions> = {}) {
   const github = new FakeGitHub();
   const posts: string[] = [];
   const ledger: string[] = [];
@@ -36,7 +50,7 @@ function setup() {
     github,
     { post: async (body) => void posts.push(body), record: async (line) => void ledger.push(line) },
     { approvals: {} },
-    { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
+    { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {}, ...options },
   );
   const verdict = (risk: string, sha = A) =>
     gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "${risk}", "head_sha": "${sha}"} -->`)!);
@@ -237,4 +251,133 @@ test('the gate uses the configured sensitive paths and names the one that trippe
   await gate.handleApproval(1, alice);
   assert.match(posts.at(-1)!, /1 of 2, rated LOW by the auditor, raised to HIGH because it changes internal\/auth\/token\.go/);
   assert.deepEqual(github.merged, []);
+});
+
+test('a pull request retargeted away from main is not merged, and its approvals wait', async () => {
+  const { gate, posts, verdict, github, ledger } = setup();
+  verdict('HIGH');
+  await gate.handleApproval(1, alice);
+  github.pull.baseRef = 'gh-pages';
+  await gate.handleApproval(1, bob);
+  assert.match(posts.at(-1)!, /#1 targets gh-pages, and DualDrive only merges into main, so this approval wasn't counted/);
+  assert.match(ledger.at(-1)!, /targets gh-pages, not main/);
+  assert.deepEqual(github.merged, []);
+  github.pull.baseRef = 'main';
+  await gate.handleApproval(1, bob);
+  assert.deepEqual(github.merged, [A]);
+});
+
+test('a retarget while CI runs stops the merge', async () => {
+  const { gate, posts, verdict, github } = setup();
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[], [{ status: 'completed', conclusion: 'success' }]];
+  github.onFirstCiPoll = async () => {
+    github.pull.baseRef = 'release';
+  };
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /#1 targets release, and DualDrive only merges into main, so it isn't being merged/);
+  assert.deepEqual(github.merged, []);
+});
+
+test('the base branch can be configured', async () => {
+  const { gate, verdict, github } = setup({ baseBranch: 'trunk' });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(github.merged, []);
+  github.pull.baseRef = 'trunk';
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(github.merged, [A]);
+});
+
+test('a reviewer can take an approval back, and only their own', async () => {
+  const { gate, posts, verdict, github, ledger } = setup();
+  verdict('HIGH');
+  await gate.handleRevoke(1, alice);
+  assert.match(posts.at(-1)!, /alice hasn't approved #1, so there's nothing to take back/);
+  await gate.handleApproval(1, alice);
+  await gate.handleRevoke(1, bob);
+  assert.match(posts.at(-1)!, /bob hasn't approved #1/);
+  await gate.handleRevoke(1, alice);
+  assert.match(posts.at(-1)!, /Took back alice's approval for #1\. 0 approvals are left\./);
+  assert.match(ledger.at(-1)!, /approval withdrawn by alice/);
+  await gate.handleApproval(1, bob);
+  assert.match(posts.at(-1)!, /Approval from bob recorded for #1 \(1 of 2/);
+  assert.deepEqual(github.merged, []);
+});
+
+test('an approval taken back while CI runs stops the merge', async () => {
+  const { gate, posts, verdict, github } = setup();
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[], [{ status: 'completed', conclusion: 'success' }]];
+  github.onFirstCiPoll = () => gate.handleRevoke(1, alice);
+  await gate.handleApproval(1, alice);
+  assert.ok(posts.some((post) => /Took back alice's approval/.test(post)));
+  assert.match(posts.at(-1)!, /An approval for #1 was taken back while CI ran \(0 of 1\), so it isn't being merged/);
+  assert.deepEqual(github.merged, []);
+});
+
+test('a required check that has not registered yet is waited for', async () => {
+  const { gate, posts, verdict, github } = setup({ requiredChecks: ['test'] });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  const lint = { name: 'lint', status: 'completed', conclusion: 'success' };
+  github.runs = [[lint], [lint, { name: 'test', status: 'completed', conclusion: 'success' }]];
+  await gate.handleApproval(1, alice);
+  assert.ok(posts.some((post) => /Waiting for CI/.test(post)));
+  assert.deepEqual(github.merged, [A]);
+});
+
+test('a required check that never shows up blocks the merge', async () => {
+  const { gate, posts, verdict, github } = setup({ requiredChecks: ['test'] });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[{ name: 'lint', status: 'completed', conclusion: 'success' }]];
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /hasn't finished/);
+  assert.deepEqual(github.merged, []);
+});
+
+test('the merge commit names the reviewers, the commit and the risk', async () => {
+  const { gate, verdict, github } = setup();
+  verdict('MEDIUM');
+  await gate.handleApproval(1, alice);
+  await gate.handleApproval(1, bob);
+  assert.deepEqual(github.messages, [
+    'Hash passwords with scrypt\n\n' +
+      'Approved-by: alice\n' +
+      'Approved-by: bob\n' +
+      `Approved-commit: ${A}\n` +
+      'Risk: rated MEDIUM by the auditor, raised to HIGH because it changes src/auth.js',
+  ]);
+});
+
+test('approvals saved before labels existed still merge, named by their key', async () => {
+  const github = new FakeGitHub();
+  const gate = new Gate(
+    github,
+    { post: async () => {}, record: async () => {} },
+    { approvals: { 1: { headSha: A, reviewers: [alice.key] } } },
+    { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {} },
+  );
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "HIGH", "head_sha": "${A}"} -->`)!);
+  await gate.handleApproval(1, bob);
+  assert.deepEqual(github.merged, [A]);
+  assert.match(github.messages[0], /Approved-by: @switch-user-a:local\nApproved-by: bob\n/);
+});
+
+test('nothing posted about base branches or revocations mentions anyone', async () => {
+  const { gate, posts, verdict, github } = setup();
+  verdict('HIGH');
+  await gate.handleRevoke(1, alice);
+  await gate.handleApproval(1, alice);
+  await gate.handleRevoke(1, alice);
+  github.pull.baseRef = 'gh-pages';
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(
+    posts.filter((post) => post.includes('@')),
+    [],
+  );
 });

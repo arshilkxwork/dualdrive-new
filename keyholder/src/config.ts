@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseSensitivePaths } from './rules.ts';
+import { parseRequiredChecks, parseSensitivePaths } from './rules.ts';
 
 const keyholderDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -37,6 +37,8 @@ export interface Config {
   auditors: string[];
   reviewers: string[];
   sensitivePaths: readonly string[];
+  baseBranch: string;
+  requiredChecks: readonly string[];
   githubToken: string;
   owner: string;
   repo: string;
@@ -58,6 +60,8 @@ export function loadConfig(): Config {
     auditors: list('AUDITOR_SENDERS'),
     reviewers: list('REVIEWER_SENDERS'),
     sensitivePaths: parseSensitivePaths(process.env.SENSITIVE_PATHS),
+    baseBranch: process.env.BASE_BRANCH?.trim() || 'main',
+    requiredChecks: parseRequiredChecks(process.env.REQUIRED_CHECKS),
     githubToken: required('GITHUB_TOKEN'),
     owner,
     repo,

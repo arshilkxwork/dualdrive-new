@@ -5,6 +5,8 @@ import {
   ciState,
   floorRisk,
   parseApproval,
+  parseRequiredChecks,
+  parseRevoke,
   parseSensitivePaths,
   parseVerdictTag,
   requiredApprovals,
@@ -98,6 +100,30 @@ test('no check runs yet is pending, not passed', () => {
   assert.equal(ciState([{ status: 'in_progress', conclusion: null }]), 'pending');
   assert.equal(ciState([{ status: 'completed', conclusion: 'success' }]), 'passed');
   assert.equal(ciState([{ status: 'completed', conclusion: 'failure' }, { status: 'queued', conclusion: null }]), 'failed');
+});
+
+test('a required check must exist and pass; any failed run still fails', () => {
+  const run = (name: string, conclusion = 'success') => ({ name, status: 'completed', conclusion });
+  assert.equal(ciState([run('lint')], ['test']), 'pending');
+  assert.equal(ciState([run('lint'), run('test')], ['test']), 'passed');
+  assert.equal(ciState([run('lint', 'failure'), run('test')], ['test']), 'failed');
+  assert.equal(ciState([run('test', 'failure')], ['test']), 'failed');
+  assert.equal(ciState([run('test'), { name: 'e2e', status: 'in_progress', conclusion: null }], ['test']), 'pending');
+  assert.equal(ciState([run('lint')]), 'passed');
+});
+
+test('REQUIRED_CHECKS is a comma-separated list, empty when unset', () => {
+  assert.deepEqual(parseRequiredChecks(undefined), []);
+  assert.deepEqual(parseRequiredChecks(' '), []);
+  assert.deepEqual(parseRequiredChecks('test, lint ,'), ['test', 'lint']);
+});
+
+test('revoke parses like approve and only when it opens the message', () => {
+  assert.equal(parseRevoke('@keyholder revoke #7', 'keyholder'), 7);
+  assert.equal(parseRevoke('@Keyholder: revoke PR 7 - found a bug', 'keyholder'), 7);
+  assert.equal(parseRevoke('@keyholder approve #7', 'keyholder'), null);
+  assert.equal(parseApproval('@keyholder revoke #7', 'keyholder'), null);
+  assert.equal(parseRevoke('@builder should I @keyholder revoke #7?', 'keyholder'), null);
 });
 
 test('a repo can name its own sensitive paths', () => {

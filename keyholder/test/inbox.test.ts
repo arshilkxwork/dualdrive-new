@@ -18,6 +18,16 @@ test('an approval from a reviewer is an approval', () => {
   ]);
 });
 
+test('a revocation from a reviewer is a revocation, and from anyone else is turned away', () => {
+  assert.deepEqual(readMessage(from('bob', '@keyholder revoke #3'), true, config), [
+    { kind: 'revoke', pr: 3, reviewer: { key: '@switch-bob:local', label: 'bob' } },
+  ]);
+  assert.deepEqual(readMessage(from('mallory', '@keyholder revoke #3'), true, config), [
+    { kind: 'reply', body: NOT_A_REVIEWER },
+  ]);
+  assert.deepEqual(readMessage(from('bob', '@keyholder revoke #3'), false, config), []);
+});
+
 test('a reviewer who asks for something else gets the usage line', () => {
   assert.deepEqual(readMessage(from('alice', '@keyholder merge #3'), true, config), [{ kind: 'reply', body: USAGE }]);
   assert.deepEqual(readMessage(from('bob', '  @Keyholder: status?'), true, config), [{ kind: 'reply', body: USAGE }]);

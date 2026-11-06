@@ -44,10 +44,15 @@ The rules @keyholder applies on every approval:
 
 1. The latest @auditor verdict for the pull request must name the pull request's current head commit, full 40-character SHA. No verdict yet means "wait", not a failure. A verdict for an older commit means "stale, wait for a fresh audit". A verdict at the current commit that can't be parsed means the pull request is treated as CRITICAL, and so does a tag that doesn't open the auditor's message.
 2. Required approvals are the higher of the verdict (LOW and MEDIUM need 1, HIGH needs 2, CRITICAL never merges) and a floor from the changed files. Changes to `.github/` or any `.env`, `.env.*` or `.envrc` file are always at least HIGH. So are the project's own sensitive paths: by default `src/auth.js`, anything under `src/auth/`, `package.json` and `package-lock.json`, or whatever `SENSITIVE_PATHS` lists for another repo. A fooled auditor can't talk the gate down.
-3. Each reviewer counts once. If the head moves between approvals, the count starts again.
-4. Before merging, the head is checked once more, and CI must be green. An empty check-run list means "not registered yet", not "passed". The merge call passes the approved SHA, so GitHub itself refuses if the head moved in the last second.
+3. Each reviewer counts once. If the head moves between approvals, the count starts again. A reviewer can take their approval back with "@keyholder revoke #N", up to the moment of the merge, including while @keyholder waits for CI.
+4. The pull request must target `BASE_BRANCH` (`main` by default). Its author can retarget it without moving the head, so this is checked on every approval and twice more before the merge: before and after the wait for CI.
+5. Before merging, the head is checked once more, and CI must be green. An empty check-run list means "not registered yet", not "passed". With `REQUIRED_CHECKS` set, each named check also has to exist and pass, so an unrelated check run that finishes first doesn't count as CI. The merge call passes the approved SHA, so GitHub itself refuses if the head moved in the last second.
 
-Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts is ignored. Every approval, refusal and merge goes into `dualdrive-ledger`, a room document only @keyholder can edit.
+Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts is ignored. Every approval, refusal and merge goes into `dualdrive-ledger`, a room document only @keyholder can edit. The merge commit carries the same record as git trailers (`Approved-by:`, `Approved-commit:`, `Risk:`), so it survives in history even if the ledger is deleted:
+
+```bash
+git log --merges --format='%h %s%n%(trailers)'
+```
 
 ## What it stops, and what it doesn't
 
@@ -61,6 +66,8 @@ Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts 
 | A commit lands after the audit or between approvals | Approvals count only for the commit the verdict names, and the count restarts if the head moves. The merge call passes the approved SHA, so GitHub refuses a head that moved at the last moment. |
 | The pull request's tests try to reach the network or change their own files | `audit/run.sh` runs them in a container with no network and read-only mounts. |
 | An old approval in the chat history gets replayed | @keyholder acts only on approvals as they arrive. |
+| @builder retargets an approved pull request at another branch | @keyholder merges only into `BASE_BRANCH`, and checks the target on every approval and again on both sides of the CI wait. |
+| A reviewer spots a problem after approving | "@keyholder revoke #N" drops their approval. It takes effect even while a merge is waiting for CI. |
 
 It doesn't protect against:
 
@@ -68,7 +75,7 @@ It doesn't protect against:
 - Anyone with admin rights on the Switch server or the upstream repo, who can change the addressing policy or the branch protection.
 - Running @keyholder as the same user as the agents. They can then read its token and merge without it. `audit/run.sh` notices keyholder's secrets in its own `.env`, but not in a file somewhere else.
 - The pull request's code running in GitHub Actions. CI runs the same tests with network access; GitHub gives workflows from forks a read-only token and no repository secrets.
-- Deleting the ledger. Agents other than @keyholder can't edit it, but Switch lets people in the room delete room documents.
+- Deleting the ledger. Agents other than @keyholder can't edit it, but Switch lets people in the room delete room documents. The merge commits keep who approved what; refusals and revocations are only in the ledger.
 
 ## What's in here
 
@@ -141,7 +148,7 @@ npm test           # demo-service, audit and keyholder
 npm run typecheck
 ```
 
-The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, CI that hasn't registered yet, failed CI, malformed verdicts. `audit/run.sh` and the live Switch connection need the real setup above to run.
+The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, revocations (including one sent during the CI wait), retargeted pull requests, CI that hasn't registered yet, required checks, failed CI, malformed verdicts and the merge commit's trailers. `audit/run.sh` and the live Switch connection need the real setup above to run.
 
 ## CI
 
@@ -172,7 +179,7 @@ GITHUB_REPOSITORY=arshilkxwork/dualdrive bash scripts/audit-e2e.sh   # needs Doc
 
 ## Known limitations
 
-- **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped.
+- **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped. Revocations work the same way: one sent while it was down didn't happen, so send it again.
 - **CI waits up to 30 seconds.** After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
 - **One upstream repo per @keyholder.** `GITHUB_REPOSITORY` is fixed.
 - **The project's sensitive paths are a plain list.** `SENSITIVE_PATHS` takes exact files and folders (`internal/auth/,go.mod`). It doesn't understand glob patterns, and its default fits demo-service.

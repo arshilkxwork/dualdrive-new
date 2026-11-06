@@ -94,7 +94,17 @@ export function opensWithMention(body: string, handle: string): boolean {
 // about or quoted ("don't let @keyholder approve #1 yet", "> @keyholder
 // approve #1"), and counting that would approve on the reviewer's behalf.
 export function parseApproval(body: string, handle: string): number | null {
-  const pattern = new RegExp(`^\\s*@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)(?!\\w)`, 'i');
+  return parseCommand(body, handle, 'approve');
+}
+
+// "@keyholder revoke #12": a reviewer takes back their own approval. Same
+// shape and the same rule about opening the message.
+export function parseRevoke(body: string, handle: string): number | null {
+  return parseCommand(body, handle, 'revoke');
+}
+
+function parseCommand(body: string, handle: string, verb: string): number | null {
+  const pattern = new RegExp(`^\\s*@${escapeRegExp(handle)}:?\\s+${verb}\\s+(?:pr\\s*)?#?(\\d+)(?!\\w)`, 'i');
   const found = body.match(pattern);
   return found ? Number(found[1]) : null;
 }
@@ -149,6 +159,8 @@ export function requiredApprovals(risk: Risk): number {
 }
 
 export interface CheckRun {
+  // GitHub always sends it; REQUIRED_CHECKS matches on it.
+  name?: string;
   status: string;
   conclusion: string | null;
 }
@@ -156,8 +168,10 @@ export interface CheckRun {
 export type CiState = 'pending' | 'passed' | 'failed';
 
 // An empty list means GitHub hasn't registered the workflow yet. It is not a
-// pass, and [].every(...) would say it was.
-export function ciState(runs: CheckRun[]): CiState {
+// pass, and [].every(...) would say it was. For the same reason a required
+// check with no run yet is pending, even when every other run is green: it
+// may simply not have registered. Any failed run fails, required or not.
+export function ciState(runs: CheckRun[], requiredChecks: readonly string[] = []): CiState {
   if (runs.length === 0) {
     return 'pending';
   }
@@ -166,5 +180,17 @@ export function ciState(runs: CheckRun[]): CiState {
   if (finished.some((run) => !passing.has(run.conclusion ?? ''))) {
     return 'failed';
   }
+  if (requiredChecks.some((name) => !runs.some((run) => run.name === name))) {
+    return 'pending';
+  }
   return finished.length === runs.length ? 'passed' : 'pending';
+}
+
+// Reads a comma-separated REQUIRED_CHECKS value. Unset or empty means none,
+// which keeps the older behaviour: every run that exists has to pass.
+export function parseRequiredChecks(value: string | undefined): readonly string[] {
+  return (value ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter(Boolean);
 }
