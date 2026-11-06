@@ -6,7 +6,7 @@ Coding agents in team chat are useful right up to the moment one of them gets pr
 - **@auditor** (Codex if installed, otherwise Claude Code) runs fixed checks on each pull request and posts a verdict tied to the exact commit it checked.
 - **@keyholder** is not an AI. It's a small TypeScript service in the room, and the only participant whose GitHub token can merge. Its Switch addressing policy admits two named human reviewers and no agents.
 
-**The claim:** the merge gate holds even if @builder and @auditor are both compromised, and even if a commit lands between the audit and the approvals. GitHub stops @builder from pushing to the base repo. Switch stops anyone but the two reviewers from directing @keyholder: when an agent mentions @keyholder, Switch's server posts the refusal itself, and @keyholder's code never runs. @keyholder then checks everything downstream in code, including that every approval counts only for the commit it was given against.
+**The claim:** the merge gate holds even if @builder and @auditor are both compromised, as long as @keyholder runs under its own OS user (setup step 4), and even if a commit lands between the audit and the approvals. GitHub stops @builder from pushing to the base repo. Switch stops anyone but the two reviewers from directing @keyholder: when an agent mentions @keyholder, Switch's server posts the refusal itself, and @keyholder's code never runs. @keyholder then checks everything downstream in code, including that every approval counts only for the commit it was given against.
 
 ## How it works
 
@@ -54,6 +54,7 @@ Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts 
 | Attack | What stops it |
 |---|---|
 | @builder is prompt-injected and tries to push to `main` or merge on GitHub | Its GitHub account has no write access to the upstream repo. It can only push to its own fork and open pull requests. |
+| A compromised agent reads @keyholder's GitHub token or Switch key from disk | @keyholder runs under its own macOS user, and its `.env` is readable only by that user. `audit/run.sh` needs no write token, and it refuses to run if keyholder's secrets are in the `.env` it reads. |
 | A compromised agent tells @keyholder to merge | @keyholder's addressing policy admits the two reviewers and no agents. Switch's server posts the refusal, and @keyholder's code never sees the message. |
 | @auditor is fooled into rating a dangerous change LOW | A change to `.github/`, an `.env`, `.env.*` or `.envrc` file, or one of the project's sensitive paths (by default `src/auth.js`, `src/auth/`, `package.json`, `package-lock.json`) needs two approvals whatever the verdict says. Any other change still needs a reviewer to approve the exact commit. |
 | @builder posts a fake verdict tag | @keyholder reads verdicts only from the senders in `AUDITOR_SENDERS`. |
@@ -65,6 +66,7 @@ It doesn't protect against:
 
 - A reviewer who approves without reading. The two humans are the last check, and the gate can't make them careful.
 - Anyone with admin rights on the Switch server or the upstream repo, who can change the addressing policy or the branch protection.
+- Running @keyholder as the same user as the agents. They can then read its token and merge without it. `audit/run.sh` notices keyholder's secrets in its own `.env`, but not in a file somewhere else.
 - The pull request's code running in GitHub Actions. CI runs the same tests with network access; GitHub gives workflows from forks a read-only token and no repository secrets.
 - Deleting the ledger. Agents other than @keyholder can't edit it, but Switch lets people in the room delete room documents.
 
@@ -76,7 +78,7 @@ It doesn't protect against:
 | `audit/run.sh` | The checks @auditor runs on a pull request. Prints one JSON line. |
 | `keyholder/` | The merge agent. `npm run register` once, then `npm start`. |
 | `templates/dualdrive.room.yaml` | Switch template that creates @builder, @auditor and the room. |
-| `.env.example` | Every setting both `audit/run.sh` and `keyholder/` read. |
+| `.env.example` | The settings `audit/run.sh` and `keyholder/` read. Each gets its own `.env` in its own copy of the repo (setup step 4). |
 
 ## Setup
 
@@ -91,18 +93,23 @@ Do this in order. Several steps depend on the one before.
    2. In that repo, go to Settings → Actions → General and set fork pull request workflows to run without approval. GitHub otherwise holds Actions runs on pull requests from first-time contributors, which @builder's fork is.
    3. From your own account, fork it. Your account must have no write access to the upstream repo; that's the "@builder can't merge" guarantee, since Claude Code runs with your `gh` login.
    4. Open one throwaway pull request from the fork and confirm the `test` check starts on its own. GitHub only offers a check as "required" once it has run.
-   5. Protect `main`: require a pull request, and require the `test` check to pass.
+   5. Protect `main`: require a pull request, require the `test` check to pass, and turn on "Do not allow bypassing the above settings". The bot account owns the repo, so without that its token could skip the check.
    6. Create a fine-grained token on the bot account for that repo only, with Pull requests: read and write, Contents: read and write, Checks: read. Test one merge with it before recording; a missing permission shows up as a 403 at the worst moment.
 3. **Chat.** The local server comes with Mattermost. Create users for your two reviewers, for example `alice` and `bob`, and link each one's Mattermost account to a Switch user. Switch's docs say an unlinked account "matches nobody", so an addressing rule naming the user won't match the chat account until it's linked.
-4. **`.env`.** `cp .env.example .env` and fill in the GitHub values and `SWITCH_BRIDGE_URL`. That's the agent bridge, which isn't always the Gateway URL: `GET <url>/health` returns 200 on the right one.
-5. **Register @keyholder.** Create a registration API key in the Gateway, put it in `SWITCH_REGISTRATION_TOKEN`, then:
+4. **Two `.env` files.** @builder and @auditor run as you and can read any file you can, so @keyholder's token has to live somewhere they can't.
+   1. Create a standard macOS user for @keyholder, for example `dualdrive-keyholder`, in System Settings → Users & Groups. As that user, install Node 22 and clone this repo again. Steps 5 and 8 run in that copy.
+   2. In keyholder's copy, `cp .env.example .env` and `chmod 600 .env`, then fill in the keyholder settings and `SWITCH_BRIDGE_URL`. That's the agent bridge, which isn't always the Gateway URL: `GET <url>/health` returns 200 on the right one.
+   3. In your own copy, `cp .env.example .env` and fill in only `UPSTREAM_REPO_URL` and `GITHUB_REPOSITORY`, plus `AUDIT_GITHUB_TOKEN` if you want a higher GitHub rate limit. `audit/run.sh` refuses to run if `GITHUB_TOKEN`, `KEYHOLDER_API_KEY` or `SWITCH_REGISTRATION_TOKEN` has a value here.
+
+   A Docker container under your own user doesn't replace the second user: @auditor runs Docker, and `docker inspect` prints a container's environment.
+5. **Register @keyholder.** As the keyholder user, create a registration API key in the Gateway, put it in `SWITCH_REGISTRATION_TOKEN` in keyholder's `.env`, then:
    ```bash
    cd keyholder && npm install && npm run register
    ```
-   Copy the printed `KEYHOLDER_AGENT_ID` and `KEYHOLDER_API_KEY` into `.env`. This registers it as `always_on` through `POST /agents`. Registering it in the Gateway as an "other" agent gives it the `session_passive` model, and then Switch replies on its behalf that it's awaiting a manual poll on every approval.
+   Copy the printed `KEYHOLDER_AGENT_ID` and `KEYHOLDER_API_KEY` into keyholder's `.env`. This registers it as `always_on` through `POST /agents`. Registering it in the Gateway as an "other" agent gives it the `session_passive` model, and then Switch replies on its behalf that it's awaiting a manual poll on every approval.
 6. **@keyholder's addressing policy.** In the Gateway, give @keyholder one rule: users = the two reviewers, agents = none. Take a screenshot; it's the evidence for the claim.
-7. **The room.** In Switch Console, create a room from `templates/dualdrive.room.yaml`. Fill in the upstream repo, your fork, the absolute path to `audit/run.sh`, and the two reviewers. Put the new room's id in `DUALDRIVE_ROOM_ID`.
-8. **Start @keyholder.**
+7. **The room.** In Switch Console, create a room from `templates/dualdrive.room.yaml`. Fill in the upstream repo, your fork, the absolute path to `audit/run.sh` in your own copy, and the two reviewers. Put the new room's id in `DUALDRIVE_ROOM_ID` in keyholder's `.env`.
+8. **Start @keyholder**, as the keyholder user.
    ```bash
    cd keyholder && npm start
    ```
