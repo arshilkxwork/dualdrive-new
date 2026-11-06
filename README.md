@@ -42,7 +42,7 @@ sequenceDiagram
 
 The rules @keyholder applies on every approval:
 
-1. The latest @auditor verdict for the pull request must name the pull request's current head commit, full 40-character SHA. No verdict yet means "wait", not a failure. A verdict for an older commit means "stale, wait for a fresh audit". A verdict at the current commit that can't be parsed means the pull request is treated as CRITICAL.
+1. The latest @auditor verdict for the pull request must name the pull request's current head commit, full 40-character SHA. No verdict yet means "wait", not a failure. A verdict for an older commit means "stale, wait for a fresh audit". A verdict at the current commit that can't be parsed means the pull request is treated as CRITICAL, and so does a tag that doesn't open the auditor's message.
 2. Required approvals are the higher of the verdict (LOW and MEDIUM need 1, HIGH needs 2, CRITICAL never merges) and a floor from the changed files. Changes to `.github/` or any `.env`, `.env.*` or `.envrc` file are always at least HIGH. So are the project's own sensitive paths: by default `src/auth.js`, anything under `src/auth/`, `package.json` and `package-lock.json`, or whatever `SENSITIVE_PATHS` lists for another repo. A fooled auditor can't talk the gate down.
 3. Each reviewer counts once. If the head moves between approvals, the count starts again.
 4. Before merging, the head is checked once more, and CI must be green. An empty check-run list means "not registered yet", not "passed". The merge call passes the approved SHA, so GitHub itself refuses if the head moved in the last second.
@@ -57,7 +57,7 @@ Verdicts count only from the senders in `AUDITOR_SENDERS`. A tag @builder posts 
 | A compromised agent reads @keyholder's GitHub token or Switch key from disk | @keyholder runs under its own macOS user, and its `.env` is readable only by that user. `audit/run.sh` needs no write token, and it refuses to run if keyholder's secrets are in the `.env` it reads. |
 | A compromised agent tells @keyholder to merge | @keyholder's addressing policy admits the two reviewers and no agents. Switch's server posts the refusal, and @keyholder's code never sees the message. |
 | @auditor is fooled into rating a dangerous change LOW | A change to `.github/`, an `.env`, `.env.*` or `.envrc` file, or one of the project's sensitive paths (by default `src/auth.js`, `src/auth/`, `package.json`, `package-lock.json`) needs two approvals whatever the verdict says. Any other change still needs a reviewer to approve the exact commit. |
-| @builder posts a fake verdict tag | @keyholder reads verdicts only from the senders in `AUDITOR_SENDERS`. |
+| @builder posts a fake verdict tag | @keyholder reads verdicts only from the senders in `AUDITOR_SENDERS`, and only from a tag that opens the message. A tag @builder plants in a pull request for @auditor to quote counts as unreadable. |
 | A commit lands after the audit or between approvals | Approvals count only for the commit the verdict names, and the count restarts if the head moves. The merge call passes the approved SHA, so GitHub refuses a head that moved at the last moment. |
 | The pull request's tests try to reach the network or change their own files | `audit/run.sh` runs them in a container with no network and read-only mounts. |
 | An old approval in the chat history gets replayed | @keyholder acts only on approvals as they arrive. |

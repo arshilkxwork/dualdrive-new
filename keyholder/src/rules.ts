@@ -36,6 +36,14 @@ export function parseVerdictTag(body: string): ParsedVerdict | null {
   const headSha = shaMatch ? shaMatch[1].toLowerCase() : null;
   const malformed = (reason: string): ParsedVerdict => ({ kind: 'malformed', pr, headSha, reason });
 
+  // The auditor's own tag opens its message. One further in is something it
+  // quoted, such as a tag @builder planted in a pull request description, so
+  // it can't stand as a verdict. Malformed rather than ignored, so it can't
+  // leave an older, laxer verdict for the same commit in place either.
+  if (body.slice(0, tag.index).trim() !== '') {
+    return malformed('the tag does not open the message');
+  }
+
   let data: unknown;
   try {
     data = JSON.parse(raw);
