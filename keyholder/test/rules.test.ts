@@ -47,6 +47,14 @@ test('approvals parse with or without a colon, hash or "pr"', () => {
   assert.equal(parseApproval('@keyholder approve PR 4', 'keyholder'), 4);
   assert.equal(parseApproval('@keyholder please merge #1', 'keyholder'), null);
   assert.equal(parseApproval('@keyholderx approve #1', 'keyholder'), null);
+  assert.equal(parseApproval('@keyholder approve #12abc', 'keyholder'), null);
+});
+
+test('an approval counts only when it opens the message', () => {
+  assert.equal(parseApproval('  @keyholder approve #1', 'keyholder'), 1);
+  assert.equal(parseApproval("@builder don't let @keyholder approve #1 until the tests pass", 'keyholder'), null);
+  assert.equal(parseApproval("@builder I'll tell @keyholder approve #2 once CI is green", 'keyholder'), null);
+  assert.equal(parseApproval('> @keyholder approve #1\nis this the message you want me to send?', 'keyholder'), null);
 });
 
 test('src/auth.js itself raises the floor', () => {

@@ -82,8 +82,11 @@ export function opensWithMention(body: string, handle: string): boolean {
 }
 
 // "@keyholder approve #12", "@keyholder: approve 12", "@keyholder approve PR 12 - lgtm".
+// The command has to open the message. Anywhere else it is being talked
+// about or quoted ("don't let @keyholder approve #1 yet", "> @keyholder
+// approve #1"), and counting that would approve on the reviewer's behalf.
 export function parseApproval(body: string, handle: string): number | null {
-  const pattern = new RegExp(`@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)`, 'i');
+  const pattern = new RegExp(`^\\s*@${escapeRegExp(handle)}:?\\s+approve\\s+(?:pr\\s*)?#?(\\d+)(?!\\w)`, 'i');
   const found = body.match(pattern);
   return found ? Number(found[1]) : null;
 }

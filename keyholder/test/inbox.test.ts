@@ -28,6 +28,16 @@ test('a passing mention gets no reply, so the demo refusal stands alone', () => 
   assert.deepEqual(readMessage(message, true, config), []);
 });
 
+test('an approval a reviewer quotes or talks about is not counted', () => {
+  for (const body of [
+    "@builder don't let @keyholder approve #1 until the tests pass",
+    '> @keyholder approve #1\n@builder is this the message you want me to send? looks wrong',
+    "@builder I'll tell @keyholder approve #2 once CI is green",
+  ]) {
+    assert.deepEqual(readMessage(from('alice', body), true, config), [], body);
+  }
+});
+
 test('a sender who is not a reviewer is turned away, approval or not', () => {
   assert.deepEqual(readMessage(from('mallory', '@keyholder approve #3'), true, config), [
     { kind: 'reply', body: NOT_A_REVIEWER },
