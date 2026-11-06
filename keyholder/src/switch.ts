@@ -124,7 +124,7 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerato
         yield frame;
       }
     }
-    const trailing = finalBuffer.slice(offset).trim();
+    const trailing = finalBuffer.slice(offset);
     if (trailing.length > 0) {
       const frame = parseBlock(trailing);
       if (frame) {
