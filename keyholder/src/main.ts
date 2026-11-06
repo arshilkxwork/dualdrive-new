@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { loadConfig } from './config.ts';
 import { Gate, type GateState } from './gate.ts';
 import { createGitHub } from './github.ts';
@@ -27,7 +27,12 @@ function readPersisted(): Persisted {
   if (!existsSync(config.stateFile)) {
     return {};
   }
-  return JSON.parse(readFileSync(config.stateFile, 'utf8')) as Persisted;
+  try {
+    return JSON.parse(readFileSync(config.stateFile, 'utf8')) as Persisted;
+  } catch {
+    console.warn(`[keyholder] couldn't parse state file at ${config.stateFile}; starting clean`);
+    return {};
+  }
 }
 
 const persisted = readPersisted();
@@ -35,7 +40,11 @@ const persisted = readPersisted();
 // is how a dropped stream resumes instead of starting a new connection.
 const connectionId = persisted.connectionId ?? randomUUID();
 const state: GateState = { approvals: persisted.approvals ?? {} };
-const save = () => writeFileSync(config.stateFile, `${JSON.stringify({ connectionId, approvals: state.approvals }, null, 2)}\n`);
+const save = () => {
+  const tmp = `${config.stateFile}.${process.pid}.tmp`;
+  writeFileSync(tmp, `${JSON.stringify({ connectionId, approvals: state.approvals }, null, 2)}\n`);
+  renameSync(tmp, config.stateFile);
+};
 save();
 
 const client = new SwitchClient(config.bridgeUrl, config.agentId, config.apiKey, connectionId);

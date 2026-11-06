@@ -73,8 +73,12 @@ HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
 
 # Tests. package.json is mounted with src/ and test/ because Node reads its
 # "type": "module" to decide that .js files are ES modules.
+# Capping memory, CPU and pids prevents untrusted PR code from exhausting the host.
 set +e
 docker run --rm --network none \
+  --memory=512m \
+  --cpus=1.0 \
+  --pids-limit=64 \
   -v "$CLONE/package.json":/w/package.json:ro \
   -v "$CLONE/src":/w/src:ro \
   -v "$CLONE/test":/w/test:ro \
@@ -120,6 +124,8 @@ fi
 AUTH=()
 if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
   AUTH=(-H "Authorization: Bearer $AUDIT_GITHUB_TOKEN")
+else
+  echo "audit/run.sh: AUDIT_GITHUB_TOKEN is unset; using unauthenticated GitHub API (rate limit: 60 req/hr)" >&2
 fi
 page=1
 while :; do
