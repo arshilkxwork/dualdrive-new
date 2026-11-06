@@ -84,9 +84,18 @@ fi
 
 # Dependencies. npm audit needs a lockfile; with none there's nothing it can
 # check, which is the case while demo-service has no dependencies.
+#
+# This runs on the host with network access, inside the pull request's own
+# checkout. A .npmrc there could point npm at any registry and put any
+# environment variable in the auth header, since npm expands ${VAR} in it.
+# So the pull request's .npmrc goes, npm starts with an empty environment and
+# a throwaway HOME, and the registry is named on the command line.
 if [ -f "$CLONE/package-lock.json" ]; then
+  rm -f "$CLONE/.npmrc"
+  mkdir -p "$TMPDIR/npm-home"
   set +e
-  (cd "$CLONE" && npm audit --audit-level=high --json) >"$OUT/npm-audit.json" 2>/dev/null
+  (cd "$CLONE" && env -i PATH="$PATH" HOME="$TMPDIR/npm-home" \
+    npm audit --audit-level=high --json --registry=https://registry.npmjs.org/) >"$OUT/npm-audit.json" 2>/dev/null
   set -e
 else
   echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
