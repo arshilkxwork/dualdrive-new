@@ -42,6 +42,8 @@ const client = new SwitchClient(config.bridgeUrl, config.agentId, config.apiKey,
 const room = new Room(client, config.roomId);
 const gate = new Gate(createGitHub(config.githubToken, config.owner, config.repo), room, state, {
   sensitivePaths: config.sensitivePaths,
+  baseBranch: config.baseBranch,
+  requiredChecks: config.requiredChecks,
   ciPollMs: 3000,
   ciTimeoutMs: 30000,
   onStateChange: save,
@@ -78,6 +80,10 @@ function handleMessage(payload: MessagePayload, live: boolean): void {
       case 'approve':
         console.log(`[keyholder] approval for #${action.pr} from ${from}`);
         void gate.handleApproval(action.pr, action.reviewer).catch(logError);
+        break;
+      case 'revoke':
+        console.log(`[keyholder] revocation for #${action.pr} from ${from}`);
+        void gate.handleRevoke(action.pr, action.reviewer).catch(logError);
         break;
       case 'reply':
         console.log(`[keyholder] replying to ${from}`);

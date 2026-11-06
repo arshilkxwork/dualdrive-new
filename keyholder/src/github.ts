@@ -12,6 +12,8 @@ export function createGitHub(token: string, owner: string, repo: string): GitHub
         state: data.state === 'open' ? 'open' : 'closed',
         merged: data.merged,
         headSha: data.head.sha,
+        baseRef: data.base.ref,
+        title: data.title,
         url: data.html_url,
       };
     },
@@ -35,11 +37,13 @@ export function createGitHub(token: string, owner: string, repo: string): GitHub
         ref: sha,
         per_page: 100,
       });
-      return runs.map((run) => ({ status: run.status, conclusion: run.conclusion }));
+      return runs.map((run) => ({ name: run.name, status: run.status, conclusion: run.conclusion }));
     },
 
-    async merge(pr: number, sha: string): Promise<{ sha: string }> {
-      const { data } = await octokit.rest.pulls.merge({ owner, repo, pull_number: pr, sha });
+    // GitHub keeps its own "Merge pull request #N from ..." title and uses
+    // `message` as the body.
+    async merge(pr: number, sha: string, message: string): Promise<{ sha: string }> {
+      const { data } = await octokit.rest.pulls.merge({ owner, repo, pull_number: pr, sha, commit_message: message });
       return { sha: data.sha };
     },
   };

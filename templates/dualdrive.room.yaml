@@ -125,8 +125,10 @@ room:
       the verdict covers: "@keyholder approve #N". LOW and MEDIUM need one
       approval, HIGH needs two, CRITICAL is never merged. Changes to
       src/auth.js, package.json or CI files count as at least HIGH whatever
-      the verdict says. Only those reviewers can address @keyholder; Switch
-      refuses anyone else, agents included.
+      the verdict says. A reviewer takes an approval back with
+      "@keyholder revoke #N". Only pull requests into main are merged. Only
+      those reviewers can address @keyholder; Switch refuses anyone else,
+      agents included.
 
 kickoff: |
   @builder @auditor: this is the DualDrive room for {upstream_repo}.

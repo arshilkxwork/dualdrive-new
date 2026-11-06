@@ -3,7 +3,7 @@
 
 import { senderMatches } from './config.ts';
 import type { Reviewer } from './gate.ts';
-import { opensWithMention, parseApproval, parseVerdictTag, type ParsedVerdict } from './rules.ts';
+import { opensWithMention, parseApproval, parseRevoke, parseVerdictTag, type ParsedVerdict } from './rules.ts';
 
 export interface MessagePayload {
   message_id?: string;
@@ -22,11 +22,13 @@ export interface InboxConfig {
 export type Action =
   | { kind: 'verdict'; verdict: ParsedVerdict }
   | { kind: 'approve'; pr: number; reviewer: Reviewer }
+  | { kind: 'revoke'; pr: number; reviewer: Reviewer }
   | { kind: 'reply'; body: string };
 
 // Neither reply names a handle with "@": that would address someone.
 export const NOT_A_REVIEWER = "I only act on approvals from this room's named reviewers.";
-export const USAGE = 'The only command I take is "approve #<number>" after mentioning me, for example "approve #12".';
+export const USAGE =
+  'I take two commands after mentioning me: "approve #<number>", and "revoke #<number>" to take your approval back.';
 
 export function readMessage(payload: MessagePayload, live: boolean, config: InboxConfig): Action[] {
   const sender = payload.sender ?? '';
@@ -43,15 +45,16 @@ export function readMessage(payload: MessagePayload, live: boolean, config: Inbo
     }
   }
 
-  // Approvals are acted on only as they happen, never replayed from history,
+  // Commands are acted on only as they happen, never replayed from history,
   // and only when Switch says the message addressed @keyholder: that is
   // where its addressing policy has already let the sender through.
   if (!live || payload.addressed !== true) {
     return actions;
   }
 
-  const pr = parseApproval(body, config.handle);
-  const spokenTo = pr !== null || opensWithMention(body, config.handle);
+  const approve = parseApproval(body, config.handle);
+  const revoke = parseRevoke(body, config.handle);
+  const spokenTo = approve !== null || revoke !== null || opensWithMention(body, config.handle);
   if (!spokenTo) {
     // Mentioned in passing, e.g. "@builder please notify @keyholder to merge
     // PR #1". Answering would talk over the exchange it's part of.
@@ -62,10 +65,13 @@ export function readMessage(payload: MessagePayload, live: boolean, config: Inbo
     actions.push({ kind: 'reply', body: NOT_A_REVIEWER });
     return actions;
   }
-  if (pr === null) {
+  const reviewer = { key: sender || senderName, label: senderName || sender };
+  if (approve !== null) {
+    actions.push({ kind: 'approve', pr: approve, reviewer });
+  } else if (revoke !== null) {
+    actions.push({ kind: 'revoke', pr: revoke, reviewer });
+  } else {
     actions.push({ kind: 'reply', body: USAGE });
-    return actions;
   }
-  actions.push({ kind: 'approve', pr, reviewer: { key: sender || senderName, label: senderName || sender } });
   return actions;
 }

@@ -20,6 +20,10 @@ export interface PullRequest {
   state: 'open' | 'closed';
   merged: boolean;
   headSha: string;
+  // The branch it would merge into. Its author can change this at any time
+  // without moving the head.
+  baseRef: string;
+  title: string;
   url: string;
 }
 
@@ -28,7 +32,8 @@ export interface GitHubPort {
   listChangedPaths(pr: number): Promise<string[]>;
   listCheckRuns(sha: string): Promise<CheckRun[]>;
   // Passes `sha` to GitHub, which refuses the merge if the head has moved.
-  merge(pr: number, sha: string): Promise<{ sha: string }>;
+  // `message` becomes the body of the merge commit.
+  merge(pr: number, sha: string, message: string): Promise<{ sha: string }>;
 }
 
 export interface RoomPort {
@@ -42,13 +47,25 @@ export interface Reviewer {
   label: string;
 }
 
+export interface Approvals {
+  headSha: string;
+  reviewers: string[];
+  // Display names by reviewer key, for the merge commit. Missing in state
+  // files written before it existed, so readers fall back to the key.
+  labels?: Record<string, string>;
+}
+
 export interface GateState {
-  approvals: Record<string, { headSha: string; reviewers: string[] }>;
+  approvals: Record<string, Approvals>;
 }
 
 export interface GateOptions {
   // Replaces DEFAULT_SENSITIVE_PATHS in the floor check when given.
   sensitivePaths?: readonly string[];
+  // The only branch the gate merges into. Defaults to main.
+  baseBranch?: string;
+  // Check runs that must exist and pass before a merge, by name.
+  requiredChecks?: readonly string[];
   ciPollMs: number;
   ciTimeoutMs: number;
   sleep?: (ms: number) => Promise<void>;
@@ -61,6 +78,7 @@ export class Gate {
   private readonly verdicts = new Map<number, ParsedVerdict>();
   private readonly queues = new Map<number, Promise<void>>();
   private readonly sleep: (ms: number) => Promise<void>;
+  private readonly baseBranch: string;
 
   constructor(
     private readonly github: GitHubPort,
@@ -69,6 +87,7 @@ export class Gate {
     private readonly options: GateOptions,
   ) {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.baseBranch = options.baseBranch ?? 'main';
   }
 
   // Called for every verdict tag the auditor posts, in the order posted. Only
@@ -84,6 +103,28 @@ export class Gate {
     const next = previous.then(() => this.approve(pr, reviewer));
     this.queues.set(pr, next.catch(() => {}));
     return next;
+  }
+
+  // A revocation isn't queued behind approvals. It changes the saved
+  // approvals straight away, so one sent while a merge waits for CI still
+  // counts: merge() reads the approvals again before it calls GitHub.
+  async handleRevoke(pr: number, reviewer: Reviewer): Promise<void> {
+    const approvals = this.state.approvals[pr];
+    if (!approvals?.reviewers.includes(reviewer.key)) {
+      await this.room.post(`${reviewer.label} hasn't approved #${pr}, so there's nothing to take back.`);
+      return;
+    }
+    approvals.reviewers = approvals.reviewers.filter((key) => key !== reviewer.key);
+    delete approvals.labels?.[reviewer.key];
+    if (approvals.reviewers.length === 0) {
+      delete this.state.approvals[pr];
+    }
+    this.saveState();
+    const left = approvals.reviewers.length;
+    await this.room.post(
+      `Took back ${reviewer.label}'s approval for #${pr}. ${left === 1 ? '1 approval is' : `${left} approvals are`} left.`,
+    );
+    await this.room.record(`#${pr} ${short(approvals.headSha)}: approval withdrawn by ${reviewer.label}`);
   }
 
   private async approve(pr: number, reviewer: Reviewer): Promise<void> {
@@ -109,6 +150,10 @@ export class Gate {
     }
     if (pull.state !== 'open') {
       await this.room.post(`#${pr} is closed, so there's nothing to approve.`);
+      return;
+    }
+    if (pull.baseRef !== this.baseBranch) {
+      await this.postWrongBase(pr, pull.baseRef, 'this approval wasn\'t counted');
       return;
     }
 
@@ -151,12 +196,12 @@ export class Gate {
       ratedAs = `rated ${verdict.verdict.risk} by the auditor, raised to ${risk} because it changes ${reason}`;
     }
 
-    let approvals: GateState['approvals'][string] | undefined = this.state.approvals[pr];
+    let approvals: Approvals | undefined = this.state.approvals[pr];
     if (approvals && approvals.headSha !== pull.headSha) {
       await this.room.post(`#${pr} has new commits since its earlier approvals, so the count starts again.`);
       approvals = undefined;
     }
-    approvals ??= { headSha: pull.headSha, reviewers: [] };
+    approvals ??= { headSha: pull.headSha, reviewers: [], labels: {} };
     this.state.approvals[pr] = approvals;
 
     if (approvals.reviewers.includes(reviewer.key)) {
@@ -165,6 +210,7 @@ export class Gate {
       );
     } else {
       approvals.reviewers.push(reviewer.key);
+      approvals.labels = { ...approvals.labels, [reviewer.key]: reviewer.label };
       this.saveState();
       await this.room.post(
         `Approval from ${reviewer.label} recorded for #${pr} (${approvals.reviewers.length} of ${required}, ${ratedAs}).`,
@@ -173,7 +219,7 @@ export class Gate {
     }
 
     if (approvals.reviewers.length >= required) {
-      await this.merge(pr, pull.headSha, approvals.reviewers.length, required);
+      await this.merge(pr, pull.headSha, required, ratedAs);
     }
   }
 
@@ -184,21 +230,33 @@ export class Gate {
     );
   }
 
+  private async postWrongBase(pr: number, baseRef: string, outcome: string): Promise<void> {
+    await this.room.post(`#${pr} targets ${baseRef}, and DualDrive only merges into ${this.baseBranch}, so ${outcome}.`);
+    await this.room.record(`#${pr}: targets ${baseRef}, not ${this.baseBranch}; ${outcome}`);
+  }
+
   // Runs only once the approvals are saved, so every failure here leaves them
   // standing. Approving again retries.
-  private async merge(pr: number, approvedSha: string, count: number, required: number): Promise<void> {
+  private async merge(pr: number, approvedSha: string, required: number, ratedAs: string): Promise<void> {
     let current: PullRequest;
     let ci: CiState;
     try {
       current = await this.github.getPull(pr);
-      if (current.headSha !== approvedSha) {
-        delete this.state.approvals[pr];
-        this.saveState();
-        await this.room.post(`#${pr} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
+      if (!(await this.stillTheSame(pr, current, approvedSha))) {
         return;
       }
-      ci = await this.waitForCi(pr, approvedSha, count, required);
+      ci = await this.waitForCi(pr, approvedSha, this.state.approvals[pr]?.reviewers.length ?? 0, required);
+      // The wait can take a while, and the author can retarget the pull
+      // request without moving its head, which the sha passed to GitHub
+      // wouldn't catch. Look once more.
+      if (ci === 'passed') {
+        current = await this.github.getPull(pr);
+        if (!(await this.stillTheSame(pr, current, approvedSha))) {
+          return;
+        }
+      }
     } catch (error) {
+      const count = this.state.approvals[pr]?.reviewers.length ?? 0;
       await this.room.post(
         `The approvals for #${pr} stand (${count} of ${required}), but checking it on GitHub before merging failed: ` +
           `${describe(error)}. Approve again to retry.`,
@@ -220,8 +278,16 @@ export class Gate {
       return;
     }
 
+    // A reviewer may have taken an approval back while CI ran.
+    const approvals = this.state.approvals[pr];
+    const count = approvals?.headSha === approvedSha ? approvals.reviewers.length : 0;
+    if (!approvals || count < required) {
+      await this.room.post(`An approval for #${pr} was taken back while CI ran (${count} of ${required}), so it isn't being merged.`);
+      return;
+    }
+
     try {
-      const result = await this.github.merge(pr, approvedSha);
+      const result = await this.github.merge(pr, approvedSha, mergeMessage(current, approvals, ratedAs));
       delete this.state.approvals[pr];
       this.saveState();
       await this.room.post(`Merged #${pr} as ${short(result.sha)}: ${current.url}`);
@@ -232,14 +298,31 @@ export class Gate {
     }
   }
 
+  // False, after saying why, when the pull request no longer has the approved
+  // head or no longer targets the base branch.
+  private async stillTheSame(pr: number, current: PullRequest, approvedSha: string): Promise<boolean> {
+    if (current.headSha !== approvedSha) {
+      delete this.state.approvals[pr];
+      this.saveState();
+      await this.room.post(`#${pr} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
+      return false;
+    }
+    if (current.baseRef !== this.baseBranch) {
+      await this.postWrongBase(pr, current.baseRef, "it isn't being merged");
+      return false;
+    }
+    return true;
+  }
+
   private async waitForCi(pr: number, sha: string, count: number, required: number): Promise<CiState> {
-    let ci = ciState(await this.github.listCheckRuns(sha));
+    const checks = this.options.requiredChecks ?? [];
+    let ci = ciState(await this.github.listCheckRuns(sha), checks);
     if (ci === 'pending') {
       await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging #${pr}.`);
       const polls = Math.ceil(this.options.ciTimeoutMs / this.options.ciPollMs);
       for (let i = 0; i < polls && ci === 'pending'; i++) {
         await this.sleep(this.options.ciPollMs);
-        ci = ciState(await this.github.listCheckRuns(sha));
+        ci = ciState(await this.github.listCheckRuns(sha), checks);
       }
     }
     return ci;
@@ -248,6 +331,15 @@ export class Gate {
   private saveState(): void {
     this.options.onStateChange?.(this.state);
   }
+}
+
+// The merge commit's body: the pull request's title, then trailers naming
+// who approved which commit, so the record survives in git history even if
+// the ledger document is deleted. `git log --format=%(trailers)` reads them.
+export function mergeMessage(pull: PullRequest, approvals: Approvals, ratedAs: string): string {
+  const trailers = approvals.reviewers.map((key) => `Approved-by: ${approvals.labels?.[key] ?? key}`);
+  trailers.push(`Approved-commit: ${approvals.headSha}`, `Risk: ${ratedAs}`);
+  return `${pull.title}\n\n${trailers.join('\n')}`;
 }
 
 function describe(error: unknown): string {
