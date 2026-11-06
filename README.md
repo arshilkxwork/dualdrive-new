@@ -159,8 +159,7 @@ Every pull request and every push to `main` runs these. `security` also runs wee
 | `yaml` | The Switch room template parses. |
 | `.env.example matches the code` | A setting the code reads that `.env.example` doesn't list, or one it lists that nothing reads. |
 | `secret-scan` | gitleaks over every commit, not only the current tree. |
-| `npm-audit` | Known high or critical advisories in the root and keyholder dependencies. |
-| `dependency-review` | The same for dependencies a pull request adds or changes, before they land. |
+| `npm-audit` | Known high or critical advisories in the root and keyholder dependencies, including any a pull request adds. |
 | `codeql` | CodeQL over the TypeScript and JavaScript, and over the workflows themselves. |
 
 Most of them run locally too:
