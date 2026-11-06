@@ -16,14 +16,19 @@ for candidate in "$SCRIPT_DIR/../.env" ".env"; do
     if grep -qE '^[[:space:]]*(export[[:space:]]+)?(GITHUB_TOKEN|KEYHOLDER_API_KEY|SWITCH_REGISTRATION_TOKEN)=[^[:space:]#]' "$candidate"; then
       die "$candidate holds keyholder's secrets, which the agents can read. Move them to keyholder's own .env (README, setup step 4)."
     fi
-    set -a; source "$candidate"; set +a
+    set -a
+    # shellcheck source=/dev/null
+    source "$candidate"
+    set +a
     break
   fi
 done
 
 PR_NUM="${1:-}"
 [[ "$PR_NUM" =~ ^[0-9]+$ ]] || die "usage: audit/run.sh <pr-number>"
-: "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — don't guess it from the local checkout, this script doesn't run from inside demo-service}"
+# No apostrophes in these messages: inside "${VAR:?...}" a ' starts a quote,
+# so two of them vanish from the output and one breaks the script.
+: "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — do not guess it from the local checkout, this script does not run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
 
 # An agent may run this without your shell's startup files, and so without the
@@ -42,7 +47,9 @@ find_tool() {
   die "can't find $name. Put it on the PATH of whatever runs this script."
 }
 newest_nvm_bin() {
-  ls -d "$HOME"/.nvm/versions/node/v*/bin 2>/dev/null | sort -V | tail -1
+  # With no match the pattern comes back unexpanded, and find_tool's -x
+  # test on it fails, which is what we want.
+  printf '%s\n' "$HOME"/.nvm/versions/node/v*/bin | sort -V | tail -1
 }
 for tool in git curl; do
   find_tool "$tool" /usr/bin /opt/homebrew/bin /usr/local/bin
