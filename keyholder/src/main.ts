@@ -27,7 +27,12 @@ function readPersisted(): Persisted {
   if (!existsSync(config.stateFile)) {
     return {};
   }
-  return JSON.parse(readFileSync(config.stateFile, 'utf8')) as Persisted;
+  try {
+    return JSON.parse(readFileSync(config.stateFile, 'utf8')) as Persisted;
+  } catch {
+    console.warn(`[keyholder] couldn't parse state file at ${config.stateFile}; starting clean`);
+    return {};
+  }
 }
 
 const persisted = readPersisted();
