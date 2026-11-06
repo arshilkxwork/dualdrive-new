@@ -126,6 +126,8 @@ test('REQUIRED_CHECKS is a comma-separated list, empty when unset', () => {
 test('revoke parses like approve and only when it opens the message', () => {
   assert.equal(parseRevoke('@keyholder revoke #7', 'keyholder'), 7);
   assert.equal(parseRevoke('@Keyholder: revoke PR 7 - found a bug', 'keyholder'), 7);
+  assert.equal(parseRevoke('@keyholder, revoke #7', 'keyholder'), 7);
+  assert.equal(parseRevoke('@keyholder,revoke #7', 'keyholder'), 7);
   assert.equal(parseRevoke('@keyholder approve #7', 'keyholder'), null);
   assert.equal(parseApproval('@keyholder revoke #7', 'keyholder'), null);
   assert.equal(parseRevoke('@builder should I @keyholder revoke #7?', 'keyholder'), null);
