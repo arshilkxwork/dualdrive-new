@@ -59,11 +59,13 @@ test('a message with no tag has no verdict', () => {
   assert.equal(parseVerdictTag('looks fine to me'), null);
 });
 
-test('approvals parse with or without a colon, hash or "pr"', () => {
+test('approvals parse with or without a colon, comma, hash or "pr"', () => {
   assert.equal(parseApproval('@keyholder approve #1', 'keyholder'), 1);
   assert.equal(parseApproval('@keyholder: approve #12 - looks good', 'keyholder'), 12);
+  assert.equal(parseApproval('@keyholder, approve #12 - looks good', 'keyholder'), 12);
   assert.equal(parseApproval('@Keyholder approve 3', 'keyholder'), 3);
   assert.equal(parseApproval('@keyholder approve PR 4', 'keyholder'), 4);
+  assert.equal(parseApproval('@keyholder, approve PR 4', 'keyholder'), 4);
   assert.equal(parseApproval('@keyholder please merge #1', 'keyholder'), null);
   assert.equal(parseApproval('@keyholderx approve #1', 'keyholder'), null);
   assert.equal(parseApproval('@keyholder approve #12abc', 'keyholder'), null);

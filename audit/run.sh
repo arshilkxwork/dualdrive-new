@@ -127,7 +127,8 @@ while :; do
     -H "Accept: application/vnd.github+json" \
     "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
     >"$OUT/files-$page.json"
-  count=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")).length)' "$OUT/files-$page.json")
+  count=$(node -e 'const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(data)) { console.error("GitHub files API response is not an array"); process.exit(1); } console.log(data.length);' "$OUT/files-$page.json")
+  [[ "$count" =~ ^[0-9]+$ ]] || die "GitHub files API returned unexpected response on page $page"
   [ "$count" -lt 100 ] && break
   page=$((page + 1))
 done

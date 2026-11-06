@@ -16,6 +16,9 @@ test('an approval from a reviewer is an approval', () => {
   assert.deepEqual(readMessage(from('alice', '@keyholder approve #3'), true, config), [
     { kind: 'approve', pr: 3, reviewer: { key: '@switch-alice:local', label: 'alice' } },
   ]);
+  assert.deepEqual(readMessage(from('alice', '@keyholder, approve #3'), true, config), [
+    { kind: 'approve', pr: 3, reviewer: { key: '@switch-alice:local', label: 'alice' } },
+  ]);
 });
 
 test('a revocation from a reviewer is a revocation, and from anyone else is turned away', () => {

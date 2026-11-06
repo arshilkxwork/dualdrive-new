@@ -88,12 +88,45 @@ export async function* parseSse(body: ReadableStream<Uint8Array>): AsyncGenerato
   const decoder = new TextDecoder();
   let buffer = '';
   for await (const chunk of body) {
-    buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n?/g, '\n');
+    buffer += decoder.decode(chunk, { stream: true });
+    // If the chunk cuts off inside a CRLF, keep the trailing CR until the
+    // next chunk shows whether an LF follows it.
+    let processable = buffer;
+    let leftover = '';
+    if (processable.endsWith('\r')) {
+      processable = processable.slice(0, -1);
+      leftover = '\r';
+    }
+    processable = processable.replace(/\r\n?/g, '\n');
+    let offset = 0;
     let end: number;
-    while ((end = buffer.indexOf('\n\n')) !== -1) {
-      const block = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
+    while ((end = processable.indexOf('\n\n', offset)) !== -1) {
+      const block = processable.slice(offset, end);
+      offset = end + 2;
       const frame = parseBlock(block);
+      if (frame) {
+        yield frame;
+      }
+    }
+    buffer = processable.slice(offset) + leftover;
+  }
+
+  buffer += decoder.decode();
+  if (buffer.length > 0) {
+    const finalBuffer = buffer.replace(/\r\n?/g, '\n');
+    let offset = 0;
+    let end: number;
+    while ((end = finalBuffer.indexOf('\n\n', offset)) !== -1) {
+      const block = finalBuffer.slice(offset, end);
+      offset = end + 2;
+      const frame = parseBlock(block);
+      if (frame) {
+        yield frame;
+      }
+    }
+    const trailing = finalBuffer.slice(offset).trim();
+    if (trailing.length > 0) {
+      const frame = parseBlock(trailing);
       if (frame) {
         yield frame;
       }
