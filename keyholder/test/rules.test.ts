@@ -13,6 +13,9 @@ import {
   parseSensitivePaths,
   parseVerdictTag,
   statusAsCheckRun,
+  latestStatuses,
+  normalizeSensitivePath,
+  parseMergeMethod,
   requiredApprovals,
 } from '../src/rules.ts';
 
@@ -246,4 +249,40 @@ test('commit statuses count like check runs, and a failed one fails', () => {
     ciState([{ name: 'test', status: 'completed', conclusion: 'success' }, statusAsCheckRun({ context: 'ci/jenkins', state: 'error' })], ['test']),
     'failed',
   );
+});
+
+test('a sensitive path that would match nothing is refused, not ignored', () => {
+  for (const entry of ['/', './', ' . ']) {
+    assert.throws(() => normalizeSensitivePath(entry, 'SENSITIVE_PATHS'), /repo root/, entry);
+  }
+  for (const entry of ['src/*.js', 'src/**', 'config/?.yml', 'lib/[ab].go', 'src/{a,b}/']) {
+    assert.throws(() => normalizeSensitivePath(entry, 'SENSITIVE_PATHS'), /glob pattern/, entry);
+  }
+  assert.equal(normalizeSensitivePath(' ./src/auth ', 'X'), 'src/auth');
+  assert.throws(() => parseSensitivePaths('src/auth/, /'), /SENSITIVE_PATHS: "\/" names the repo root/);
+  assert.throws(() => parseSensitivePaths('*.pem'), /glob pattern/);
+  // Blank entries from stray commas are still just skipped.
+  assert.deepEqual(parseSensitivePaths('auth.go,, '), ['auth.go']);
+});
+
+test('only the newest status of each context counts', () => {
+  const statuses = [
+    { context: 'ci/jenkins', state: 'success' },
+    { context: 'coverage', state: 'failure' },
+    { context: 'ci/jenkins', state: 'pending' },
+    { context: 'coverage', state: 'pending' },
+  ];
+  assert.deepEqual(latestStatuses(statuses), [statuses[0], statuses[1]]);
+  assert.equal(ciState(latestStatuses(statuses).map(statusAsCheckRun), ['ci/jenkins']), 'failed');
+  assert.equal(ciState(latestStatuses([statuses[0], statuses[2]]).map(statusAsCheckRun), ['ci/jenkins']), 'passed');
+});
+
+test('MERGE_METHOD takes merge, squash or rebase, and defaults to merge', () => {
+  assert.equal(parseMergeMethod(undefined, 'MERGE_METHOD'), 'merge');
+  assert.equal(parseMergeMethod('', 'MERGE_METHOD'), 'merge');
+  for (const method of ['merge', 'squash', 'rebase']) {
+    assert.equal(parseMergeMethod(method, 'MERGE_METHOD'), method);
+  }
+  assert.throws(() => parseMergeMethod('fast-forward', 'MERGE_METHOD'), /MERGE_METHOD must be merge, squash or rebase/);
+  assert.throws(() => parseMergeMethod(1, 'x'), /must be merge/);
 });

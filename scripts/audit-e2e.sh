@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs audit/run.sh end to end, with Docker, against a throwaway copy of
-# demo-service, the way @auditor does. Six pull requests:
+# demo-service, the way @auditor does. Eight pull requests:
 #
-#   1  adds a passing test                  tests pass, head_sha is its commit
+#   1  adds a passing test that imports     tests pass: the whole checkout is
+#      from a new lib/ folder               mounted, head_sha is its commit
 #   2  adds a failing test                  tests fail
 #   3  adds a test that calls the network   tests fail: the container has none
 #   4  adds a lockfile and a .npmrc that    the stand-in registry sees no
@@ -13,6 +14,10 @@
 #      is "true"                            from the pull request
 #   6  on a second upstream whose default   the configured command runs
 #      branch has a .dualdrive.json
+#   7  adds a requirements.txt pinning a    osv-scanner reports critical
+#      vulnerable Django                    vulnerabilities
+#   8  on a third upstream with neither     tests fail with a message saying
+#      package.json nor .dualdrive.json     what to add
 #
 # Pull request 1 also adds 120 notes, so its changed files take two pages of
 # the files API.
@@ -61,10 +66,13 @@ push_pr() {
 }
 
 open_pr 1
+mkdir -p "$SRC/lib"
+echo 'export const two = 1 + 1;' >"$SRC/lib/e2e-two.js"
 cat >"$SRC/test/e2e-pass.test.js" <<'EOF'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-test('e2e: passes', () => assert.equal(1 + 1, 2));
+import { two } from '../lib/e2e-two.js';
+test('e2e: passes', () => assert.equal(two, 2));
 EOF
 mkdir -p "$SRC/notes"
 for i in $(seq 1 120); do
@@ -138,6 +146,23 @@ test('e2e: passes', () => assert.equal(1 + 1, 2));
 EOF
 push_pr 6 "$WORK/configured.git"
 
+open_pr 7
+printf 'django==3.2.0\n' >"$SRC/requirements.txt"
+push_pr 7
+
+# A third upstream that is neither Node nor configured.
+git init -q --bare "$WORK/plain.git"
+git -C "$WORK/plain.git" symbolic-ref HEAD refs/heads/main
+"${GIT[@]}" checkout -q --orphan plain
+"${GIT[@]}" rm -rfq .
+echo "# plain" >"$SRC/README.md"
+"${GIT[@]}" add -A
+"${GIT[@]}" commit -qm "plain"
+"${GIT[@]}" push -q "$WORK/plain.git" HEAD:main
+"${GIT[@]}" checkout -q -B pr-8 plain
+printf 'print("hello")\n' >"$SRC/hello.py"
+push_pr 8 "$WORK/plain.git"
+
 # GitHub's test merges, refs/pull/<n>/merge. #1's merges its own head, so the
 # checks run on it. #2's merges #1's head, as a stale one would after a push,
 # so the checks fall back to #2's head.
@@ -154,10 +179,12 @@ make_merge 2 "${HEADS[1]}"
 # What GitHub's files API would list for each pull request: every path that
 # differs from the branch it targets.
 mkdir -p "$WORK/files"
-for n in 1 2 3 4 5 6; do
+for n in 1 2 3 4 5 6 7 8; do
   base=main
   if [ "$n" -eq 6 ]; then
     base=configured
+  elif [ "$n" -eq 8 ]; then
+    base=plain
   fi
   "${GIT[@]}" diff --name-only "$base" "${HEADS[$n]}" >"$WORK/files/$n.txt"
 done
@@ -201,10 +228,12 @@ REGISTRY_PID=$!
 trap 'kill "$REGISTRY_PID" "$FILES_PID" 2>/dev/null || true' EXIT
 sleep 1
 
-for n in 1 2 3 4 5 6; do
+for n in 1 2 3 4 5 6 7 8; do
   upstream="$WORK/upstream.git"
   if [ "$n" -eq 6 ]; then
     upstream="$WORK/configured.git"
+  elif [ "$n" -eq 8 ]; then
+    upstream="$WORK/plain.git"
   fi
   echo "auditing pull request $n"
   (cd "$WORK/project" && UPSTREAM_REPO_URL="file://$upstream" GITHUB_REPOSITORY="$REPO" \
@@ -212,7 +241,7 @@ for n in 1 2 3 4 5 6; do
     bash audit/run.sh "$n") >"$WORK/report-$n.json"
 done
 
-node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" <<'EOF'
+node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" "${HEADS[7]}" "${HEADS[8]}" <<'EOF'
 const { readFileSync } = require('node:fs');
 const [work, repo, merge1, ...heads] = process.argv.slice(2);
 const report = (n) => JSON.parse(readFileSync(`${work}/report-${n}.json`, 'utf8'));
@@ -222,7 +251,7 @@ const expect = (ok, what) => {
   if (!ok) failures.push(what);
 };
 
-for (const n of [1, 2, 3, 4, 5, 6]) {
+for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
   const r = report(n);
   expect(r.pr === n, `#${n}: the report names pull request ${n}`);
   expect(r.repo === repo, `#${n}: the report names the repo`);
@@ -244,7 +273,7 @@ expect(
   "#2: a test merge of some other head is ignored, and the head is checked",
 );
 expect(report(3).tested?.ref === 'head', '#3: no test merge, so the head is checked');
-expect(report(1).tests.passed === true, '#1: a passing test passes');
+expect(report(1).tests.passed === true, '#1: a test importing from lib/ passes, so the whole checkout is mounted');
 expect(report(2).tests.passed === false && report(2).tests.fail >= 1, '#2: a failing test fails');
 const network = report(3).tests;
 expect(network.passed === false && /fetch failed|ENOTFOUND|EAI_AGAIN|ENETUNREACH/.test(network.tail), '#3: the network is out of reach inside the test container');
@@ -255,6 +284,25 @@ expect(report(5).tests.passed === false && report(5).tests.fail >= 1, "#5: the p
 expect(
   report(6).tests.passed === true && report(6).tests.tail.includes('dualdrive-config-in-use'),
   "#6: the default branch's .dualdrive.json picks the test command",
+);
+
+expect(report(1).osv?.skipped === 'no lockfile osv-scanner reads', '#1: no other lockfile, so osv-scanner is skipped');
+const osv = report(7).osv;
+expect(
+  osv?.scanner === 'osv-scanner' && osv.critical >= 1 && osv.packages?.[0]?.name?.toLowerCase() === 'django',
+  `#7: osv-scanner finds critical vulnerabilities in Django 3.2.0${osv?.error ? ` (got: ${osv.error})` : ''}`,
+);
+expect(
+  report(8).tests.passed === false && /no package\.json/.test(report(8).tests.tail),
+  '#8: a repo with no test setup fails with a message saying what to add',
+);
+expect(
+  report(5).test_config?.mode === 'default' && report(5).proposed_test_config?.test_command === 'true',
+  "#5: the report shows the test command the pull request proposes, and that it wasn't used",
+);
+expect(
+  report(6).test_config?.mode === 'custom' && report(6).proposed_test_config === undefined,
+  "#6: the default branch's config is reported, and nothing is proposed",
 );
 
 const hits = readFileSync(`${work}/registry-hits.log`, 'utf8').trim();

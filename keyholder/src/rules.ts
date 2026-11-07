@@ -192,9 +192,51 @@ export function floorRisk(paths: string[], projectPaths: readonly string[] = DEF
 export function parseSensitivePaths(value: string | undefined): readonly string[] {
   const entries = (value ?? '')
     .split(',')
-    .map((entry) => entry.trim().replace(/^\.?\/+/, ''))
-    .filter(Boolean);
+    .filter((entry) => entry.trim() !== '')
+    .map((entry) => normalizeSensitivePath(entry, 'SENSITIVE_PATHS'));
   return entries.length > 0 ? entries : DEFAULT_SENSITIVE_PATHS;
+}
+
+// One sensitive path entry, relative to the repo root. An entry that would
+// match nothing is refused rather than kept as a silent no-op: "/" or "./"
+// (the root, which no changed path equals), and glob patterns, which are
+// matched as literal text.
+export function normalizeSensitivePath(entry: string, setting: string): string {
+  const path = entry.trim().replace(/^\.?\/+/, '');
+  if (path === '' || path === '.') {
+    throw new Error(`${setting}: "${entry.trim()}" names the repo root, which no changed file matches; list folders or files`);
+  }
+  if (/[*?[\]{}]/.test(path)) {
+    throw new Error(`${setting}: "${path}" looks like a glob pattern; list folders (src/auth/) or files, which match literally`);
+  }
+  return path;
+}
+
+// GitHub's pull request files API lists at most this many files. Past it,
+// a sensitive file could be in the part nobody sees.
+export const GITHUB_FILES_LIMIT = 3000;
+
+// The latest status per context. The Statuses API returns every status ever
+// posted for the commit, newest first, so a context that went from pending
+// to success appears twice.
+export function latestStatuses<T extends { context: string }>(statuses: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return statuses.filter((status) => !seen.has(status.context) && seen.add(status.context));
+}
+
+export type MergeMethod = 'merge' | 'squash' | 'rebase';
+
+// MERGE_METHOD, or a repo's merge_method: how GitHub merges, which has to be
+// one the repo allows. With rebase GitHub keeps the pull request's own
+// commits, so the Approved-by trailers exist only in the ledger.
+export function parseMergeMethod(value: unknown, setting: string): MergeMethod {
+  if (value === undefined || value === '') {
+    return 'merge';
+  }
+  if (value === 'merge' || value === 'squash' || value === 'rebase') {
+    return value;
+  }
+  throw new Error(`${setting} must be merge, squash or rebase; got ${JSON.stringify(value)}`);
 }
 
 export function higherRisk(a: Risk, b: Risk): Risk {

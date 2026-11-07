@@ -187,8 +187,8 @@ async function handleGitHub(req, res, rest) {
   if (req.method === 'GET' && path === `commits/${HEAD_SHA}/check-runs`) {
     return send(res, 200, { total_count: 1, check_runs: [{ name: 'test', status: 'completed', conclusion: 'success' }] });
   }
-  if (req.method === 'GET' && path === `commits/${HEAD_SHA}/status`) {
-    return send(res, 200, { state: 'success', sha: HEAD_SHA, total_count: 0, statuses: [] });
+  if (req.method === 'GET' && path === `commits/${HEAD_SHA}/statuses`) {
+    return send(res, 200, []);
   }
   if (req.method === 'PUT' && path === 'pulls/1/merge') {
     const body = await readJson(req);

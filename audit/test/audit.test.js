@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanDir, scanText, isEnvFile } from '../secrets.js';
-import { summarizeTests, summarizeNpmAudit, changedPaths } from '../report.js';
+import { summarizeTests, summarizeNpmAudit, summarizeOsv, changedPaths } from '../report.js';
 import { DEFAULT_AUDIT_CONFIG, loadAuditConfig, parseAuditConfig } from '../config.js';
 
 test('scanText flags a hard-coded token and redacts it', () => {
@@ -162,6 +162,57 @@ test('config.js prints one setting per line for run.sh, and exits 2 on a bad fil
       () => execFileSync(process.execPath, [join(auditDir, 'config.js'), bad], { stdio: 'pipe' }),
       (error) => error.status === 2 && /"image"/.test(String(error.stderr)),
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('osv-scanner results are counted by severity, and its exit code says the rest', () => {
+  const raw = {
+    results: [
+      {
+        source: { path: '/src/requirements.txt' },
+        packages: [
+          { package: { name: 'django', version: '3.2', ecosystem: 'PyPI' }, groups: [{ max_severity: '9.8' }, { max_severity: '7.5' }, { max_severity: '5.3' }] },
+          { package: { name: 'requests', version: '2.31.0', ecosystem: 'PyPI' }, groups: [{ max_severity: '' }] },
+          { package: { name: 'idna', version: '3.7', ecosystem: 'PyPI' }, groups: [] },
+        ],
+      },
+    ],
+  };
+  assert.deepEqual(summarizeOsv(raw, '1'), {
+    scanner: 'osv-scanner',
+    high: 1,
+    critical: 1,
+    total: 4,
+    packages: [
+      { name: 'django', version: '3.2', ecosystem: 'PyPI', vulnerabilities: 3 },
+      { name: 'requests', version: '2.31.0', ecosystem: 'PyPI', vulnerabilities: 1 },
+    ],
+  });
+  assert.deepEqual(summarizeOsv({ results: [] }, '0'), { scanner: 'osv-scanner', high: 0, critical: 0, total: 0, packages: [] });
+  assert.deepEqual(summarizeOsv(null, 'skipped'), { skipped: 'no lockfile osv-scanner reads' });
+  assert.match(summarizeOsv(null, '128').skipped, /no packages/);
+  assert.deepEqual(summarizeOsv(null, '2'), { error: 'osv-scanner exited with 2' });
+  assert.deepEqual(summarizeOsv(null, '1'), { error: 'osv-scanner exited with 1' });
+});
+
+test('.dualdrive.json saved with a byte order mark still reads', () => {
+  assert.equal(parseAuditConfig('\uFEFF{"image": "go:1", "test_command": "go test ./..."}').image, 'go:1');
+});
+
+test('config.js --json reports a refused file instead of failing', () => {
+  const auditDir = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+  const root = mkdtempSync(join(tmpdir(), 'dualdrive-config-json-'));
+  try {
+    const bad = join(root, 'bad.json');
+    writeFileSync(bad, '{"image": "python:3", "test_command": "pytest", "sensitive_paths": []}');
+    const out = JSON.parse(execFileSync(process.execPath, [join(auditDir, 'config.js'), '--json', bad], { encoding: 'utf8' }));
+    assert.match(out.error, /SENSITIVE_PATHS/);
+    const none = JSON.parse(
+      execFileSync(process.execPath, [join(auditDir, 'config.js'), '--json', join(root, 'missing.json')], { encoding: 'utf8' }),
+    );
+    assert.deepEqual(none, { image: 'node:22', test_command: 'node --test', mode: 'default' });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

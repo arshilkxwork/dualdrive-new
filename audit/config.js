@@ -8,16 +8,18 @@
 // set it to "true" and pass. A change to the file is a sensitive path for
 // @keyholder, so it needs two approvals before it lands.
 //
-//   node audit/config.js [path]    prints the image, the command and the mode,
-//                                  one per line; no path or no file means the
-//                                  demo-service defaults
+//   node audit/config.js [path]          prints the image, the command and the
+//                                        mode, one per line; no path or no file
+//                                        means the demo-service defaults
+//   node audit/config.js --json [path]   the same as one JSON object, or
+//                                        {"error": ...} for a file it refuses,
+//                                        for the report; always exits 0
 
 import { existsSync, readFileSync } from 'node:fs';
 import { isEntryPoint } from './entry.js';
 
 // What run.sh did before the file existed, so a repo without one is audited
-// exactly as before: Node 22, `node --test`, with only package.json, src/
-// and test/ mounted.
+// as before: Node 22 and `node --test`.
 export const DEFAULT_AUDIT_CONFIG = Object.freeze({ image: 'node:22', testCommand: 'node --test', mode: 'default' });
 
 // A Docker reference: registry/name:tag or name@sha256:digest. It can't start
@@ -28,7 +30,8 @@ const KNOWN_KEYS = new Set(['image', 'test_command']);
 export function parseAuditConfig(text) {
   let data;
   try {
-    data = JSON.parse(text);
+    // Some editors save JSON with a byte order mark, which JSON.parse refuses.
+    data = JSON.parse(text.replace(/^\uFEFF/, ''));
   } catch (error) {
     throw new Error(`.dualdrive.json is not valid JSON: ${error.message}`);
   }
@@ -66,11 +69,21 @@ export function loadAuditConfig(path) {
 }
 
 if (isEntryPoint(import.meta.url)) {
+  const json = process.argv[2] === '--json';
+  const path = process.argv[json ? 3 : 2];
   try {
-    const config = loadAuditConfig(process.argv[2]);
-    process.stdout.write(`${config.image}\n${config.testCommand}\n${config.mode}\n`);
+    const config = loadAuditConfig(path);
+    process.stdout.write(
+      json
+        ? `${JSON.stringify({ image: config.image, test_command: config.testCommand, mode: config.mode })}\n`
+        : `${config.image}\n${config.testCommand}\n${config.mode}\n`,
+    );
   } catch (error) {
-    console.error(`audit/run.sh: ${error.message}`);
-    process.exit(2);
+    if (json) {
+      process.stdout.write(`${JSON.stringify({ error: error.message })}\n`);
+    } else {
+      console.error(`audit/run.sh: ${error.message}`);
+      process.exit(2);
+    }
   }
 }

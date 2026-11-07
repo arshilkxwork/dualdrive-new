@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseSse, type Frame } from '../src/switch.ts';
-import { senderMatches } from '../src/config.ts';
+import { githubApiUrl, senderMatches } from '../src/config.ts';
 
 function streamOf(chunks: string[]): ReadableStream<Uint8Array> {
   const encoder = new TextEncoder();
@@ -65,4 +65,12 @@ test('senderMatches by participant id exactly, or by name ignoring case', () => 
   assert.equal(senderMatches(['@switch-user-a:local'], '@switch-user-b:local', 'Alice'), false);
   assert.equal(senderMatches(['alice', 'bob'], '@x:local', 'Bob'), true);
   assert.equal(senderMatches(['alice'], '@x:local', 'mallory'), false);
+});
+
+test('GITHUB_SERVER_URL alone points the API at that server', () => {
+  assert.equal(githubApiUrl(undefined, undefined), undefined);
+  assert.equal(githubApiUrl(undefined, 'https://github.com'), undefined);
+  assert.equal(githubApiUrl(undefined, 'https://github.example.com/'), 'https://github.example.com/api/v3');
+  assert.equal(githubApiUrl('https://api.example.com/', 'https://github.example.com'), 'https://api.example.com');
+  assert.equal(githubApiUrl('  ', 'https://ghe.corp'), 'https://ghe.corp/api/v3');
 });
