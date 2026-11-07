@@ -22,6 +22,7 @@ class FakeGitHub implements GitHubPort {
   runs: CheckRun[][] = [[{ status: 'completed', conclusion: 'success' }]];
   merged: string[] = [];
   messages: string[] = [];
+  checkCalls = 0;
   // Runs once, the first time CI is polled, to act between approval and merge.
   onFirstCiPoll: (() => Promise<void>) | null = null;
   async getPull() {
@@ -31,6 +32,7 @@ class FakeGitHub implements GitHubPort {
     return this.paths;
   }
   async listCheckRuns() {
+    this.checkCalls++;
     const hook = this.onFirstCiPoll;
     this.onFirstCiPoll = null;
     await hook?.();
@@ -517,4 +519,50 @@ test('the state file keeps at most MAX_SAVED_VERDICTS verdicts, dropping the old
   const kept = Object.keys(state.verdicts!).map(Number);
   assert.equal(kept.length, MAX_SAVED_VERDICTS);
   assert.equal(Math.min(...kept), 6);
+});
+
+test('waiting for CI backs off, so two minutes costs about a dozen calls, not forty', async () => {
+  const sleeps: number[] = [];
+  const { gate, verdict, github } = setup({ ciPollMs: 3000, ciTimeoutMs: 120_000, sleep: async (ms) => void sleeps.push(ms) });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[{ status: 'in_progress', conclusion: null }]];
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(sleeps.slice(0, 5), [3000, 6000, 12_000, 15_000, 15_000]);
+  assert.equal(
+    sleeps.reduce((sum, ms) => sum + ms, 0),
+    120_000,
+    'it still waits the whole timeout',
+  );
+  assert.ok(github.checkCalls <= 12, `${github.checkCalls} calls`);
+  assert.deepEqual(github.merged, []);
+});
+
+test('a repo set up with no CI merges with no check runs, after one more look', async () => {
+  const { gate, verdict, github, posts } = setup({ requireCi: false });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[]];
+  await gate.handleApproval(1, alice);
+  assert.deepEqual(github.merged, [A]);
+  assert.equal(github.checkCalls, 2);
+  assert.ok(!posts.some((post) => post.includes('Waiting for CI')));
+});
+
+test('a repo with no CI still waits for CI that turns up, and for required checks', async () => {
+  const late = setup({ requireCi: false });
+  late.verdict('LOW');
+  late.github.paths = ['README.md'];
+  late.github.runs = [[], [{ status: 'in_progress', conclusion: null }], [{ status: 'completed', conclusion: 'failure' }]];
+  await late.gate.handleApproval(1, alice);
+  assert.deepEqual(late.github.merged, []);
+  assert.match(late.posts.at(-1)!, /CI failed/);
+
+  const required = setup({ requireCi: false, requiredChecks: ['build'] });
+  required.verdict('LOW');
+  required.github.paths = ['README.md'];
+  required.github.runs = [[]];
+  await required.gate.handleApproval(1, alice);
+  assert.deepEqual(required.github.merged, []);
+  assert.match(required.posts.at(-1)!, /hasn't finished/);
 });

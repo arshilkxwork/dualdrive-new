@@ -16,6 +16,7 @@ import {
   latestStatuses,
   normalizeSensitivePath,
   parseMergeMethod,
+  parseRequireCi,
   requiredApprovals,
 } from '../src/rules.ts';
 
@@ -285,4 +286,16 @@ test('MERGE_METHOD takes merge, squash or rebase, and defaults to merge', () => 
   }
   assert.throws(() => parseMergeMethod('fast-forward', 'MERGE_METHOD'), /MERGE_METHOD must be merge, squash or rebase/);
   assert.throws(() => parseMergeMethod(1, 'x'), /must be merge/);
+});
+
+test('no check runs is a pass only for a repo marked as having no CI, and never with required checks', () => {
+  assert.equal(ciState([], []), 'pending');
+  assert.equal(ciState([], [], true), 'pending');
+  assert.equal(ciState([], [], false), 'passed');
+  assert.equal(ciState([], ['build'], false), 'pending');
+  assert.equal(ciState([{ status: 'completed', conclusion: 'failure' }], [], false), 'failed');
+  assert.equal(parseRequireCi(undefined, 'REQUIRE_CI'), true);
+  assert.equal(parseRequireCi('false', 'REQUIRE_CI'), false);
+  assert.equal(parseRequireCi(true, 'x'), true);
+  assert.throws(() => parseRequireCi('no', 'REQUIRE_CI'), /REQUIRE_CI must be true or false/);
 });

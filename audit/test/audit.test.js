@@ -194,6 +194,8 @@ test('osv-scanner results are counted by severity, and its exit code says the re
   assert.deepEqual(summarizeOsv(null, 'skipped'), { skipped: 'no lockfile osv-scanner reads' });
   assert.match(summarizeOsv(null, '128').skipped, /no packages/);
   assert.deepEqual(summarizeOsv(null, '2'), { error: 'osv-scanner exited with 2' });
+  assert.match(summarizeOsv(null, '124').error, /time limit/);
+  assert.match(summarizeOsv(null, '125').error, /OSV_IMAGE/);
   assert.deepEqual(summarizeOsv(null, '1'), { error: 'osv-scanner exited with 1' });
 });
 

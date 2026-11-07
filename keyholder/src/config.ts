@@ -2,7 +2,14 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseRepoSettings, parseRepositories, requireOwnSensitivePaths, type RepoName, type RepoSettings } from './repos.ts';
-import { parseCiTimeoutMs, parseMergeMethod, parseRequiredChecks, parseSensitivePaths, type MergeMethod } from './rules.ts';
+import {
+  parseCiTimeoutMs,
+  parseMergeMethod,
+  parseRequireCi,
+  parseRequiredChecks,
+  parseSensitivePaths,
+  type MergeMethod,
+} from './rules.ts';
 
 const keyholderDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -45,6 +52,7 @@ export interface Config {
   // Unset means api.github.com, or GITHUB_SERVER_URL's /api/v3.
   githubApiUrl: string | undefined;
   mergeMethod: MergeMethod;
+  requireCi: boolean;
   owner: string;
   repo: string;
   // GITHUB_REPOSITORY first, then EXTRA_REPOSITORIES.
@@ -75,6 +83,7 @@ export function loadConfig(): Config {
     githubToken: required('GITHUB_TOKEN'),
     githubApiUrl: githubApiUrl(process.env.GITHUB_API_URL, process.env.GITHUB_SERVER_URL),
     mergeMethod: parseMergeMethod(process.env.MERGE_METHOD?.trim(), 'MERGE_METHOD'),
+    requireCi: parseRequireCi(process.env.REQUIRE_CI?.trim(), 'REQUIRE_CI'),
     owner,
     repo,
     repositories,
