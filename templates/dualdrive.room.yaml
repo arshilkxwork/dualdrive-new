@@ -108,8 +108,9 @@ agents:
          🛡️ CRITICAL: CWE-306, line 12 skips token verification entirely.
          Then the evidence: the lines you mean and what the checks printed.
 
-      If `osv` has an `error`, the dependency audit didn't run: say so in
-      the verdict, so nobody reads its silence as a clean result. Tests that
+      If `vulns` or `osv` has an `error`, or `osv` was turned off, that
+      dependency audit didn't run: say so in the verdict, so nobody reads
+      its silence as a clean result. Tests that
       were stopped at the time limit count as failing.
 
       If the report has `proposed_test_config`, the pull request changes

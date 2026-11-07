@@ -56,6 +56,12 @@ check "a time limit that isn't whole seconds" 2 "must be whole seconds" \
   UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r AUDIT_TEST_TIMEOUT=10m -- 7
 check "a time limit of zero" 2 "must be whole seconds" \
   UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r AUDIT_SCAN_TIMEOUT=0 -- 7
+check "a clone URL with a token in it" 2 "UPSTREAM_REPO_URL has credentials in it" \
+  UPSTREAM_REPO_URL=https://x-access-token:abc123@github.com/o/r.git GITHUB_REPOSITORY=o/r -- 7
+check "an OSV_MODE that doesn't exist" 2 "OSV_MODE must be online, offline or off" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r OSV_MODE=fast -- 7
+check "offline OSV with no database directory" 2 "OSV_MODE=offline needs OSV_DB_DIR" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r OSV_MODE=offline OSV_DB_DIR=/no/such/dir -- 7
 
 printf 'GITHUB_TOKEN=github_pat_not_a_real_one\n' >"$WORK/.env"
 check "keyholder's GITHUB_TOKEN in .env" 2 "holds keyholder's secrets" -- 7
