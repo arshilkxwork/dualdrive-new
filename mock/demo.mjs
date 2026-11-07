@@ -71,10 +71,22 @@ function check(ok, what) {
 
 async function main() {
   console.log(`DualDrive sandbox: mock Switch and GitHub at ${MOCK}, real keyholder.`);
-  const deadline = Date.now() + 60_000;
-  while (!(await get('/sandbox/status').catch(() => ({ connected: false }))).connected) {
+  // Told apart, since they need different fixes: the mock not answering at
+  // all, and the mock answering while keyholder never joins the room.
+  let deadline = Date.now() + 10_000;
+  while (!(await get('/health').then(() => true, () => false))) {
     if (Date.now() > deadline) {
-      throw new Error('keyholder never connected to the mock Switch room');
+      throw new Error(
+        `nothing answers at ${MOCK}. Run the whole sandbox with \`docker compose up\`, ` +
+          'or start the mock first with `node mock/switch-server.mjs` and keyholder against it.',
+      );
+    }
+    await sleep(500);
+  }
+  deadline = Date.now() + 60_000;
+  while (!(await get('/sandbox/status')).connected) {
+    if (Date.now() > deadline) {
+      throw new Error(`the mock at ${MOCK} is up, but keyholder never joined its room. Check keyholder's log and its SWITCH_BRIDGE_URL.`);
     }
     await sleep(500);
   }

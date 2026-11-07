@@ -8,7 +8,20 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-docker info >/dev/null 2>&1 || { echo "demo-sandbox.sh: Docker isn't running" >&2; exit 2; }
+
+# An IDE, an agent or a non-login shell may not have read the startup files
+# that put Docker Desktop's CLI on PATH. Look where it installs, as
+# audit/run.sh does.
+if ! command -v docker >/dev/null 2>&1; then
+  for dir in "$HOME/.docker/bin" /Applications/Docker.app/Contents/Resources/bin /usr/local/bin /opt/homebrew/bin; do
+    if [ -x "$dir/docker" ]; then
+      PATH="$dir:$PATH"
+      break
+    fi
+  done
+fi
+command -v docker >/dev/null 2>&1 || { echo "demo-sandbox.sh: can't find docker. Install Docker Desktop, or put docker on PATH." >&2; exit 2; }
+docker info >/dev/null 2>&1 || { echo "demo-sandbox.sh: Docker is installed but not running; start Docker Desktop first" >&2; exit 2; }
 
 code=0
 docker compose up --build --attach demo --abort-on-container-exit --exit-code-from demo || code=$?

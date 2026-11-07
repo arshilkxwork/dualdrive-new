@@ -9,6 +9,14 @@
 
 import { isRepoName } from './rules.ts';
 
+// One repo's own rules, where they differ from the global settings. Unset
+// fields fall back to SENSITIVE_PATHS, BASE_BRANCH and REQUIRED_CHECKS.
+export interface RepoSettings {
+  baseBranch?: string;
+  requiredChecks?: readonly string[];
+  sensitivePaths?: readonly string[];
+}
+
 export interface RepoName {
   owner: string;
   repo: string;
@@ -69,6 +77,72 @@ export class RepoRouter<G> {
   names(): string[] {
     return this.repos.map((repo) => repo.name);
   }
+}
+
+// Reads REPO_SETTINGS, a JSON object keyed by owner/repo:
+//
+//   {"org/web": {"base_branch": "master", "required_checks": ["build"],
+//                "sensitive_paths": ["src/session/", "package.json"]}}
+//
+// Anything it can't use is refused, rather than leaving a repo on rules
+// that were meant for another one: a repo that isn't configured, an unknown
+// field, an empty list of sensitive paths.
+export function parseRepoSettings(text: string | undefined, repos: readonly RepoName[]): Map<string, RepoSettings> {
+  const settings = new Map<string, RepoSettings>();
+  if (!text?.trim()) {
+    return settings;
+  }
+  let data: unknown;
+  try {
+    data = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`REPO_SETTINGS is not valid JSON: ${(error as Error).message}`);
+  }
+  if (typeof data !== 'object' || data === null || Array.isArray(data)) {
+    throw new Error('REPO_SETTINGS must be a JSON object keyed by owner/repo');
+  }
+  const strings = (value: unknown) => Array.isArray(value) && value.every((item) => typeof item === 'string' && item.trim() !== '');
+  for (const [name, raw] of Object.entries(data)) {
+    const key = repoKey(name);
+    if (!repos.some((repo) => repoKey(repo.name) === key)) {
+      throw new Error(`REPO_SETTINGS names ${name}, which isn't GITHUB_REPOSITORY or in EXTRA_REPOSITORIES`);
+    }
+    if (settings.has(key)) {
+      throw new Error(`REPO_SETTINGS names ${name} twice`);
+    }
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      throw new Error(`REPO_SETTINGS for ${name} must be an object`);
+    }
+    const fields = raw as Record<string, unknown>;
+    const unknown = Object.keys(fields).filter((field) => !['base_branch', 'required_checks', 'sensitive_paths'].includes(field));
+    if (unknown.length > 0) {
+      throw new Error(`REPO_SETTINGS for ${name} has fields keyholder doesn't read: ${unknown.join(', ')}`);
+    }
+    const repo: RepoSettings = {};
+    if (fields.base_branch !== undefined) {
+      if (typeof fields.base_branch !== 'string' || !/^[^\s~^:?*[\\]+$/.test(fields.base_branch)) {
+        throw new Error(`REPO_SETTINGS for ${name}: base_branch must be a branch name`);
+      }
+      repo.baseBranch = fields.base_branch;
+    }
+    if (fields.required_checks !== undefined) {
+      if (!strings(fields.required_checks)) {
+        throw new Error(`REPO_SETTINGS for ${name}: required_checks must be a list of check names`);
+      }
+      repo.requiredChecks = (fields.required_checks as string[]).map((check) => check.trim());
+    }
+    if (fields.sensitive_paths !== undefined) {
+      if (!strings(fields.sensitive_paths) || (fields.sensitive_paths as string[]).length === 0) {
+        throw new Error(
+          `REPO_SETTINGS for ${name}: sensitive_paths must list at least one path ` +
+            '(.github/, .env files and .dualdrive.json count without being listed)',
+        );
+      }
+      repo.sensitivePaths = (fields.sensitive_paths as string[]).map((path) => path.trim().replace(/^\.?\/+/, ''));
+    }
+    settings.set(key, repo);
+  }
+  return settings;
 }
 
 // Names no handle, like every other reply.
