@@ -229,7 +229,7 @@ bash scripts/audit-e2e.sh   # needs Docker running
 - **`mergeable_state` isn't used.** GitHub documents it as best-effort, so the merge waits on check runs instead.
 - **@auditor is still a model.** It can be fooled, and the pull request's own test output reaches it in the report. The design limits what that costs (the floor, the commit pinning, the human approvals) rather than assuming it can't happen.
 
-## Resolved since the first release
+## Improvements and Fixes
 
 - **CI waited only 30 seconds.** It now waits two minutes by default (`CI_TIMEOUT_MS`), with backoff, and counts commit statuses as well as check runs.
 - **One upstream repo per @keyholder.** `EXTRA_REPOSITORIES` and `REPO_SETTINGS` add more, each with its own rules.
