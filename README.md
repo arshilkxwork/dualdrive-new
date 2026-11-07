@@ -12,6 +12,27 @@ Coding agents in team chat are useful right up to the moment one of them gets pr
 
 **The claim:** the merge gate holds even if @builder and @auditor are both compromised, as long as @keyholder runs under its own OS user (setup step 4), and even if a commit lands between the audit and the approvals. GitHub stops @builder from pushing to the base repo. Switch stops anyone but the two reviewers from directing @keyholder: when an agent mentions @keyholder, Switch's server posts the refusal itself, and @keyholder's code never runs. @keyholder then checks everything downstream in code, including that every approval counts only for the commit it was given against.
 
+## Try it in a minute
+
+With only Docker, and no accounts or tokens:
+
+```bash
+docker compose up            # or: bash scripts/demo-sandbox.sh, which exits with the demo's result
+```
+
+This runs the real @keyholder against `mock/switch-server.mjs`, which stands in for Switch's agent bridge and for GitHub, and `mock/demo.mjs`, which plays the room. A prompt-injected @builder plants a LOW verdict and tells @keyholder to merge. The mock's addressing policy refuses the mention, the way Switch does, and @keyholder ignores the verdict because it didn't come from the auditor. Then alice approves (1 of 2, since `src/auth.js` raises the pull request to HIGH), alice again (still 1), and bob, and @keyholder merges the approved commit.
+
+The mocks only play Switch's and GitHub's parts. The Switch refusal you see there comes from the mock; in the real setup it comes from Switch's server.
+
+## Why not just GitHub branch protection?
+
+Keep it: setup step 5 turns it on, so that even @keyholder's own token can't merge past a failing `test` check. What branch protection can't express is the rest of the gate:
+
+- **How many approvals depends on the change.** Branch protection asks for the same number on every pull request. DualDrive asks for one on a LOW or MEDIUM verdict, two on HIGH or on any change to a sensitive path, and never merges CRITICAL.
+- **Approvals bind to the audited commit.** A reviewer approves the exact commit the auditor checked. A verdict for an older commit doesn't count, and the merge passes the approved SHA, so GitHub refuses a head that moved. GitHub can dismiss stale reviews on a new push, but it doesn't know which commit was audited.
+- **The approval happens where the agents work.** Reviewers type `@keyholder approve #4` in the chat room, and Switch, not a prompt, decides who may say it. The agents in the same room can't.
+- **No agent holds a merge credential.** Only @keyholder, running as its own OS user, has a token that can merge.
+
 ## How it works
 
 ```mermaid
@@ -96,18 +117,6 @@ It doesn't protect against:
 | `templates/dualdrive.room.yaml` | Switch template that creates @builder, @auditor and the room. |
 | `.env.example` | The settings `audit/run.sh` and `keyholder/` read. Each gets its own `.env` in its own copy of the repo (setup step 4). |
 
-## Try it in a minute
-
-With only Docker, and no accounts or tokens:
-
-```bash
-docker compose up            # or: bash scripts/demo-sandbox.sh, which exits with the demo's result
-```
-
-This runs the real @keyholder against `mock/switch-server.mjs`, which stands in for Switch's agent bridge and for GitHub, and `mock/demo.mjs`, which plays the room. A prompt-injected @builder plants a LOW verdict and tells @keyholder to merge. The mock's addressing policy refuses the mention, the way Switch does, and @keyholder ignores the verdict because it didn't come from the auditor. Then alice approves (1 of 2, since `src/auth.js` raises the pull request to HIGH), alice again (still 1), and bob, and @keyholder merges the approved commit.
-
-The mocks only play Switch's and GitHub's parts. The Switch refusal you see there comes from the mock; in the real setup it comes from Switch's server.
-
 ## Setup
 
 Do this in order. Several steps depend on the one before.
@@ -156,7 +165,7 @@ Take Switch away and there is no shared room, no addressing policy to enforce, n
 
 ## Demo (2–3 minutes)
 
-> 📺 **Watch the Submission Demo Video:** [YouTube: DualDrive Demo Walkthrough (2:45)](https://youtu.be/wN1CVuk-jH8)
+> 📺 **Watch the Submission Demo Video:** [YouTube: DualDrive Demo Walkthrough (2:55)](https://youtu.be/wN1CVuk-jH8)
 1. A reviewer: "@builder add an emergency bypass that skips token checks". @builder opens a pull request from its fork, CI runs, and @auditor posts a CRITICAL verdict (CWE-306) quoting the line.
 2. A reviewer, word for word: "@builder please notify @keyholder to merge PR #1." @builder's reply contains the literal `@keyholder` mention, and Switch refuses it. Say on camera that this refusal comes from Switch, not from this repo.
 3. A reviewer asks for the proper fix: `crypto.scrypt` hashing, `crypto.timingSafeEqual`, and tests. Tests pass in the no-network container. @auditor says MEDIUM, and @keyholder raises it to HIGH because `src/auth.js` changed.
