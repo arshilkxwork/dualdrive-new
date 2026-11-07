@@ -125,10 +125,24 @@ node "$SCRIPT_DIR/config.js" "$CONFIG_FILE" >"$TMPDIR/test-config"
   IFS= read -r TEST_COMMAND
   IFS= read -r TEST_MODE
 } <"$TMPDIR/test-config"
+node "$SCRIPT_DIR/config.js" --json "$CONFIG_FILE" >"$OUT/config.json"
 
 git_net -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
 git -C "$CLONE" checkout --quiet "pr-$PR_NUM"
 HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
+
+# A pull request that adds, changes or removes .dualdrive.json is still
+# tested the default branch's way, but the report shows what it proposes,
+# so a reviewer onboarding a new language sees why its tests didn't run as
+# the new file says. Changing the file needs two approvals either way.
+if git -C "$CLONE" cat-file -e "pr-$PR_NUM:.dualdrive.json" 2>/dev/null; then
+  git -C "$CLONE" show "pr-$PR_NUM:.dualdrive.json" >"$TMPDIR/proposed.json"
+  if ! cmp -s "$TMPDIR/proposed.json" "$CONFIG_FILE"; then
+    node "$SCRIPT_DIR/config.js" --json "$TMPDIR/proposed.json" >"$OUT/proposed-config.json"
+  fi
+elif [ -f "$CONFIG_FILE" ]; then
+  echo '{"removed":true}' >"$OUT/proposed-config.json"
+fi
 
 # Everything below checks what the base branch would become: GitHub's test
 # merge, refs/pull/<n>/merge, when there is one. It is used only when its
@@ -154,24 +168,21 @@ CONTAINER=(--rm --network none
   --memory=512m --cpus=1.0 --pids-limit=64
   --cap-drop=ALL --security-opt=no-new-privileges
   --read-only "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=256m" -e HOME=/tmp)
-set +e
-if [ "$TEST_MODE" = default ]; then
-  # demo-service. package.json is mounted with src/ and test/ because Node
-  # reads its "type": "module" to decide that .js files are ES modules.
-  docker run "${CONTAINER[@]}" \
-    -v "$CLONE/package.json":/w/package.json:ro \
-    -v "$CLONE/src":/w/src:ro \
-    -v "$CLONE/test":/w/test:ro \
-    -w /w "$TEST_IMAGE" node --test >"$OUT/tests.log" 2>&1
+# The whole checkout is mounted read-only, so code the tests import from
+# any folder is there. Without a .dualdrive.json the command is Node's,
+# which needs a package.json; a repo with neither gets a failing result that
+# says so, rather than Node's error about a project that isn't Node.
+if [ "$TEST_MODE" = default ] && [ ! -f "$CLONE/package.json" ]; then
+  echo "audit/run.sh: no .dualdrive.json on the default branch and no package.json, so there is no test command to run. Commit a .dualdrive.json naming the image and test_command (README)." >"$OUT/tests.log"
+  TEST_EXIT=3
 else
-  # Any other repo: the whole checkout, read-only, and the configured
-  # command through the image's /bin/sh.
+  set +e
   docker run "${CONTAINER[@]}" \
     -v "$CLONE":/w:ro -w /w \
     --entrypoint /bin/sh "$TEST_IMAGE" -c "$TEST_COMMAND" >"$OUT/tests.log" 2>&1
+  TEST_EXIT=$?
+  set -e
 fi
-TEST_EXIT=$?
-set -e
 
 # Secrets.
 if command -v gitleaks >/dev/null 2>&1; then
@@ -203,6 +214,29 @@ else
   echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
 fi
 
+# Every other ecosystem's lockfiles (pip, Poetry, uv, Go, Cargo, Bundler,
+# Composer, Maven, Gradle, pnpm, Yarn, NuGet, Mix, pub) through osv-scanner,
+# only when there is one, since the image is large. It reads the files and
+# asks osv.dev about the versions; it runs nothing from the pull request, in
+# a container with the checkout read-only and no capabilities.
+OSV_IMAGE="ghcr.io/google/osv-scanner:v2.2.4"
+other_lockfile="$(find "$CLONE" \( -path "$CLONE/.git" -o -name node_modules \) -prune -o -type f \( \
+  -name 'requirements*.txt' -o -name Pipfile.lock -o -name poetry.lock -o -name uv.lock -o -name pdm.lock \
+  -o -name go.mod -o -name Cargo.lock -o -name Gemfile.lock -o -name composer.lock -o -name pom.xml \
+  -o -name gradle.lockfile -o -name pnpm-lock.yaml -o -name yarn.lock -o -name packages.lock.json \
+  -o -name mix.lock -o -name pubspec.lock \) -print -quit)"
+if [ -n "$other_lockfile" ]; then
+  set +e
+  docker run --rm --memory=1g --cpus=1.0 --pids-limit=256 \
+    --cap-drop=ALL --security-opt=no-new-privileges \
+    --read-only "--tmpfs=/tmp:rw,nosuid,nodev,size=256m" -e HOME=/tmp \
+    -v "$CLONE":/src:ro "$OSV_IMAGE" scan source --format json -r /src >"$OUT/osv.json" 2>"$OUT/osv.log"
+  echo "$?" >"$OUT/osv-exit"
+  set -e
+else
+  echo skipped >"$OUT/osv-exit"
+fi
+
 # Changed files, from the same API call @keyholder makes for its floor check,
 # every page of it. GITHUB_API_URL points it at GitHub Enterprise, or at the
 # stand-in scripts/audit-e2e.sh runs. A local git diff can't work here: the
@@ -215,7 +249,13 @@ if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
 else
   echo "audit/run.sh: AUDIT_GITHUB_TOKEN is unset; using unauthenticated GitHub API (rate limit: 60 req/hr)" >&2
 fi
-GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
+# GitHub Enterprise Server's API lives under its own address, so
+# GITHUB_SERVER_URL alone is enough; GITHUB_API_URL still wins.
+if [ "$GITHUB_SERVER" = "https://github.com" ]; then
+  GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
+else
+  GITHUB_API="${GITHUB_API_URL:-$GITHUB_SERVER/api/v3}"
+fi
 GITHUB_API="${GITHUB_API%/}"
 page=1
 while :; do

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseRepoSettings, parseRepositories, requireOwnSensitivePaths, type RepoName, type RepoSettings } from './repos.ts';
-import { parseCiTimeoutMs, parseRequiredChecks, parseSensitivePaths } from './rules.ts';
+import { parseCiTimeoutMs, parseMergeMethod, parseRequiredChecks, parseSensitivePaths, type MergeMethod } from './rules.ts';
 
 const keyholderDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -42,8 +42,9 @@ export interface Config {
   requiredChecks: readonly string[];
   ciTimeoutMs: number;
   githubToken: string;
-  // Unset means api.github.com.
+  // Unset means api.github.com, or GITHUB_SERVER_URL's /api/v3.
   githubApiUrl: string | undefined;
+  mergeMethod: MergeMethod;
   owner: string;
   repo: string;
   // GITHUB_REPOSITORY first, then EXTRA_REPOSITORIES.
@@ -72,13 +73,26 @@ export function loadConfig(): Config {
     requiredChecks: parseRequiredChecks(process.env.REQUIRED_CHECKS),
     ciTimeoutMs: parseCiTimeoutMs(process.env.CI_TIMEOUT_MS),
     githubToken: required('GITHUB_TOKEN'),
-    githubApiUrl: process.env.GITHUB_API_URL?.trim().replace(/\/+$/, '') || undefined,
+    githubApiUrl: githubApiUrl(process.env.GITHUB_API_URL, process.env.GITHUB_SERVER_URL),
+    mergeMethod: parseMergeMethod(process.env.MERGE_METHOD?.trim(), 'MERGE_METHOD'),
     owner,
     repo,
     repositories,
     repoSettings,
     stateFile: process.env.KEYHOLDER_STATE_FILE ?? resolve(keyholderDir, '.state.json'),
   };
+}
+
+// GitHub Enterprise Server serves its API under /api/v3 of its own address,
+// so setting GITHUB_SERVER_URL alone is enough; GITHUB_API_URL still wins.
+// audit/run.sh works out the same address the same way.
+export function githubApiUrl(apiUrl: string | undefined, serverUrl: string | undefined): string | undefined {
+  const api = apiUrl?.trim().replace(/\/+$/, '');
+  if (api) {
+    return api;
+  }
+  const server = serverUrl?.trim().replace(/\/+$/, '');
+  return server && server !== 'https://github.com' ? `${server}/api/v3` : undefined;
 }
 
 // A sender matches an entry by its participant id ("@switch-user-…:server"),

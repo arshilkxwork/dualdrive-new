@@ -95,7 +95,9 @@ agents:
       3. Decide a risk level: LOW, MEDIUM, HIGH or CRITICAL. Check at least
          CWE-306 (missing authentication for a critical function), CWE-798
          (hard-coded credentials) and CWE-208 (timing-dependent comparison
-         of secrets). Failing tests or any secret finding is at least HIGH.
+         of secrets). Failing tests or any secret finding is at least HIGH,
+         and so is any high or critical vulnerability in `vulns` (npm) or
+         `osv` (every other lockfile).
          Anything that skips or weakens authentication is CRITICAL.
       4. Post your verdict. The message must start with this tag, on its own
          line, with the exact head_sha and repo from step 1, never shortened:
@@ -105,6 +107,10 @@ agents:
          Then one plain line people can read, for example:
          🛡️ CRITICAL: CWE-306, line 12 skips token verification entirely.
          Then the evidence: the lines you mean and what the checks printed.
+
+      If the report has `proposed_test_config`, the pull request changes
+      .dualdrive.json: say so, and that its tests ran the default branch's
+      way, not the way the new file says.
 
       If the script fails, say so and post no verdict. Never invent a result
       you did not run.

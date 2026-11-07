@@ -86,3 +86,12 @@ test('every extra repo has to name its own sensitive paths', () => {
   // The default repo is covered by SENSITIVE_PATHS.
   assert.doesNotThrow(() => requireOwnSensitivePaths(parseRepositories('org/api', undefined), new Map()));
 });
+
+test('REPO_SETTINGS takes a merge_method and refuses paths that match nothing', () => {
+  const repos = parseRepositories('org/api', 'org/web');
+  const settings = parseRepoSettings('{"org/web": {"sensitive_paths": ["auth/"], "merge_method": "squash"}}', repos);
+  assert.equal(settings.get('org/web')?.mergeMethod, 'squash');
+  assert.throws(() => parseRepoSettings('{"org/web": {"merge_method": "ff"}}', repos), /merge_method must be merge, squash or rebase/);
+  assert.throws(() => parseRepoSettings('{"org/web": {"sensitive_paths": ["/"]}}', repos), /repo root/);
+  assert.throws(() => parseRepoSettings('{"org/web": {"sensitive_paths": ["auth/*.py"]}}', repos), /glob pattern/);
+});

@@ -7,7 +7,7 @@
 // Each repo gets its own Gate, so approvals, verdicts and queues for
 // org/a#1 and org/b#1 can't mix: they live in different objects.
 
-import { isRepoName } from './rules.ts';
+import { isRepoName, normalizeSensitivePath, parseMergeMethod, type MergeMethod } from './rules.ts';
 
 // One repo's own rules, where they differ from the global settings. Unset
 // fields fall back to SENSITIVE_PATHS, BASE_BRANCH and REQUIRED_CHECKS.
@@ -15,6 +15,7 @@ export interface RepoSettings {
   baseBranch?: string;
   requiredChecks?: readonly string[];
   sensitivePaths?: readonly string[];
+  mergeMethod?: MergeMethod;
 }
 
 export interface RepoName {
@@ -82,7 +83,8 @@ export class RepoRouter<G> {
 // Reads REPO_SETTINGS, a JSON object keyed by owner/repo:
 //
 //   {"org/web": {"base_branch": "master", "required_checks": ["build"],
-//                "sensitive_paths": ["src/session/", "package.json"]}}
+//                "sensitive_paths": ["src/session/", "package.json"],
+//                "merge_method": "squash"}}
 //
 // Anything it can't use is refused, rather than leaving a repo on rules
 // that were meant for another one: a repo that isn't configured, an unknown
@@ -114,7 +116,8 @@ export function parseRepoSettings(text: string | undefined, repos: readonly Repo
       throw new Error(`REPO_SETTINGS for ${name} must be an object`);
     }
     const fields = raw as Record<string, unknown>;
-    const unknown = Object.keys(fields).filter((field) => !['base_branch', 'required_checks', 'sensitive_paths'].includes(field));
+    const known = ['base_branch', 'required_checks', 'sensitive_paths', 'merge_method'];
+    const unknown = Object.keys(fields).filter((field) => !known.includes(field));
     if (unknown.length > 0) {
       throw new Error(`REPO_SETTINGS for ${name} has fields keyholder doesn't read: ${unknown.join(', ')}`);
     }
@@ -138,7 +141,12 @@ export function parseRepoSettings(text: string | undefined, repos: readonly Repo
             '(.github/, .env files and .dualdrive.json count without being listed)',
         );
       }
-      repo.sensitivePaths = (fields.sensitive_paths as string[]).map((path) => path.trim().replace(/^\.?\/+/, ''));
+      repo.sensitivePaths = (fields.sensitive_paths as string[]).map((path) =>
+        normalizeSensitivePath(path, `REPO_SETTINGS for ${name}: sensitive_paths`),
+      );
+    }
+    if (fields.merge_method !== undefined) {
+      repo.mergeMethod = parseMergeMethod(fields.merge_method, `REPO_SETTINGS for ${name}: merge_method`);
     }
     settings.set(key, repo);
   }

@@ -68,7 +68,8 @@ const gates = new RepoRouter(config.repositories, (target, isDefault) => {
     extraStates.set(key, gateState);
   }
   const own = config.repoSettings.get(repoKey(target.name));
-  return new Gate(createGitHub(config.githubToken, target.owner, target.repo, config.githubApiUrl), room, gateState, {
+  const github = createGitHub(config.githubToken, target.owner, target.repo, config.githubApiUrl, own?.mergeMethod ?? config.mergeMethod);
+  return new Gate(github, room, gateState, {
     sensitivePaths: own?.sensitivePaths ?? config.sensitivePaths,
     baseBranch: own?.baseBranch ?? config.baseBranch,
     requiredChecks: own?.requiredChecks ?? config.requiredChecks,
