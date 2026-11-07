@@ -73,6 +73,15 @@ jobs:
       - name: audit/run.sh's guards under /bin/bash
         run: bash scripts/run-sh-guards.sh /bin/bash
 
+  # The real keyholder, built from its Dockerfile, against the mock Switch
+  # room and GitHub (docker-compose.yml).
+  sandbox:
+    name: sandbox (docker compose)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/demo-sandbox.sh
+
   # audit/run.sh for real: Docker, the no-network test container, the secret
   # scan, the npm config isolation and GitHub's files API. A fork's own push
   # to main is skipped, since the fork has no pull requests for that API.

@@ -42,6 +42,8 @@ export interface Config {
   requiredChecks: readonly string[];
   ciTimeoutMs: number;
   githubToken: string;
+  // Unset means api.github.com.
+  githubApiUrl: string | undefined;
   owner: string;
   repo: string;
   // GITHUB_REPOSITORY first, then EXTRA_REPOSITORIES.
@@ -66,6 +68,7 @@ export function loadConfig(): Config {
     requiredChecks: parseRequiredChecks(process.env.REQUIRED_CHECKS),
     ciTimeoutMs: parseCiTimeoutMs(process.env.CI_TIMEOUT_MS),
     githubToken: required('GITHUB_TOKEN'),
+    githubApiUrl: process.env.GITHUB_API_URL?.trim().replace(/\/+$/, '') || undefined,
     owner,
     repo,
     repositories,

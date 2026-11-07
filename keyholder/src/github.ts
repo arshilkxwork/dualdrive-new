@@ -2,8 +2,9 @@ import { Octokit } from '@octokit/rest';
 import type { GitHubPort, PullRequest } from './gate.ts';
 import type { CheckRun } from './rules.ts';
 
-export function createGitHub(token: string, owner: string, repo: string): GitHubPort {
-  const octokit = new Octokit({ auth: token, userAgent: 'dualdrive-keyholder' });
+// `baseUrl` is GITHUB_API_URL: GitHub Enterprise's API, or the sandbox's mock.
+export function createGitHub(token: string, owner: string, repo: string, baseUrl?: string): GitHubPort {
+  const octokit = new Octokit({ auth: token, userAgent: 'dualdrive-keyholder', ...(baseUrl ? { baseUrl } : {}) });
 
   return {
     async getPull(pr: number): Promise<PullRequest> {

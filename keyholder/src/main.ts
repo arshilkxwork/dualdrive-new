@@ -62,7 +62,7 @@ const gates = new RepoRouter(config.repositories, (target, isDefault) => {
     gateState = { approvals: persisted.repos?.[key] ?? {} };
     extraStates.set(key, gateState);
   }
-  return new Gate(createGitHub(config.githubToken, target.owner, target.repo), room, gateState, {
+  return new Gate(createGitHub(config.githubToken, target.owner, target.repo, config.githubApiUrl), room, gateState, {
     sensitivePaths: config.sensitivePaths,
     baseBranch: config.baseBranch,
     requiredChecks: config.requiredChecks,
