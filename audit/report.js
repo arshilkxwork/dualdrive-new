@@ -50,6 +50,12 @@ export function summarizeOsv(raw, exit) {
   if (exit === '128') {
     return { skipped: 'osv-scanner found no packages in the lockfiles' };
   }
+  if (exit === '124') {
+    return { error: 'osv-scanner was stopped at the time limit (AUDIT_SCAN_TIMEOUT)' };
+  }
+  if (exit === '125') {
+    return { error: 'docker could not start osv-scanner (exit 125); is OSV_IMAGE reachable from this machine?' };
+  }
   if ((exit !== '0' && exit !== '1') || raw === null) {
     return { error: `osv-scanner exited with ${exit}` };
   }

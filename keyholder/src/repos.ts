@@ -7,7 +7,7 @@
 // Each repo gets its own Gate, so approvals, verdicts and queues for
 // org/a#1 and org/b#1 can't mix: they live in different objects.
 
-import { isRepoName, normalizeSensitivePath, parseMergeMethod, type MergeMethod } from './rules.ts';
+import { isRepoName, normalizeSensitivePath, parseMergeMethod, parseRequireCi, type MergeMethod } from './rules.ts';
 
 // One repo's own rules, where they differ from the global settings. Unset
 // fields fall back to SENSITIVE_PATHS, BASE_BRANCH and REQUIRED_CHECKS.
@@ -16,6 +16,7 @@ export interface RepoSettings {
   requiredChecks?: readonly string[];
   sensitivePaths?: readonly string[];
   mergeMethod?: MergeMethod;
+  requireCi?: boolean;
 }
 
 export interface RepoName {
@@ -116,7 +117,7 @@ export function parseRepoSettings(text: string | undefined, repos: readonly Repo
       throw new Error(`REPO_SETTINGS for ${name} must be an object`);
     }
     const fields = raw as Record<string, unknown>;
-    const known = ['base_branch', 'required_checks', 'sensitive_paths', 'merge_method'];
+    const known = ['base_branch', 'required_checks', 'sensitive_paths', 'merge_method', 'require_ci'];
     const unknown = Object.keys(fields).filter((field) => !known.includes(field));
     if (unknown.length > 0) {
       throw new Error(`REPO_SETTINGS for ${name} has fields keyholder doesn't read: ${unknown.join(', ')}`);
@@ -147,6 +148,12 @@ export function parseRepoSettings(text: string | undefined, repos: readonly Repo
     }
     if (fields.merge_method !== undefined) {
       repo.mergeMethod = parseMergeMethod(fields.merge_method, `REPO_SETTINGS for ${name}: merge_method`);
+    }
+    if (fields.require_ci !== undefined) {
+      if (typeof fields.require_ci !== 'boolean') {
+        throw new Error(`REPO_SETTINGS for ${name}: require_ci must be true or false`);
+      }
+      repo.requireCi = fields.require_ci;
     }
     settings.set(key, repo);
   }

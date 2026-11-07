@@ -224,6 +224,18 @@ export function latestStatuses<T extends { context: string }>(statuses: readonly
   return statuses.filter((status) => !seen.has(status.context) && seen.add(status.context));
 }
 
+// REQUIRE_CI, or a repo's require_ci: false for a repo with no CI, which
+// would otherwise wait out the timeout on every merge and never merge.
+export function parseRequireCi(value: unknown, setting: string): boolean {
+  if (value === undefined || value === '' || value === true || value === 'true') {
+    return true;
+  }
+  if (value === false || value === 'false') {
+    return false;
+  }
+  throw new Error(`${setting} must be true or false; got ${JSON.stringify(value)}`);
+}
+
 export type MergeMethod = 'merge' | 'squash' | 'rebase';
 
 // MERGE_METHOD, or a repo's merge_method: how GitHub merges, which has to be
@@ -266,12 +278,14 @@ export interface CheckRun {
 export type CiState = 'pending' | 'passed' | 'failed';
 
 // An empty list means GitHub hasn't registered the workflow yet. It is not a
-// pass, and [].every(...) would say it was. For the same reason a required
+// pass, and [].every(...) would say it was, unless `requireCi` is false: a
+// repo set up with no CI at all, where nothing will ever register. Required
+// checks are still waited for either way. For the same reason a required
 // check with no run yet is pending, even when every other run is green: it
 // may simply not have registered. Any failed run fails, required or not.
-export function ciState(runs: CheckRun[], requiredChecks: readonly string[] = []): CiState {
+export function ciState(runs: CheckRun[], requiredChecks: readonly string[] = [], requireCi = true): CiState {
   if (runs.length === 0) {
-    return 'pending';
+    return requireCi || requiredChecks.length > 0 ? 'pending' : 'passed';
   }
   const finished = runs.filter((run) => run.status === 'completed');
   const passing = new Set(['success', 'neutral', 'skipped']);

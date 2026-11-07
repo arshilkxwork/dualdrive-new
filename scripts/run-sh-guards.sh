@@ -48,6 +48,14 @@ check "GITHUB_SERVER_URL that isn't https" 2 "GITHUB_SERVER_URL must be an https
   UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r GITHUB_SERVER_URL=http://github.example.com -- 7
 check "GITHUB_SERVER_URL with a header in it" 2 "GITHUB_SERVER_URL must be an https:// URL" \
   UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r "GITHUB_SERVER_URL=https://x.example/.extraheader=1" -- 7
+check "OSV_IMAGE that docker would read as a flag" 2 "OSV_IMAGE must be a container image name" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r OSV_IMAGE=--privileged -- 7
+check "NPM_AUDIT_REGISTRY that isn't https" 2 "NPM_AUDIT_REGISTRY must be an https:// URL" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r NPM_AUDIT_REGISTRY=http://mirror.example/ -- 7
+check "a time limit that isn't whole seconds" 2 "must be whole seconds" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r AUDIT_TEST_TIMEOUT=10m -- 7
+check "a time limit of zero" 2 "must be whole seconds" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r AUDIT_SCAN_TIMEOUT=0 -- 7
 
 printf 'GITHUB_TOKEN=github_pat_not_a_real_one\n' >"$WORK/.env"
 check "keyholder's GITHUB_TOKEN in .env" 2 "holds keyholder's secrets" -- 7

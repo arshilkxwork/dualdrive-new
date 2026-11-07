@@ -95,3 +95,10 @@ test('REPO_SETTINGS takes a merge_method and refuses paths that match nothing', 
   assert.throws(() => parseRepoSettings('{"org/web": {"sensitive_paths": ["/"]}}', repos), /repo root/);
   assert.throws(() => parseRepoSettings('{"org/web": {"sensitive_paths": ["auth/*.py"]}}', repos), /glob pattern/);
 });
+
+test('REPO_SETTINGS takes require_ci as a boolean', () => {
+  const repos = parseRepositories('org/api', 'org/docs');
+  const settings = parseRepoSettings('{"org/docs": {"sensitive_paths": ["CODEOWNERS"], "require_ci": false}}', repos);
+  assert.equal(settings.get('org/docs')?.requireCi, false);
+  assert.throws(() => parseRepoSettings('{"org/docs": {"require_ci": "no"}}', repos), /require_ci must be true or false/);
+});

@@ -70,8 +70,15 @@ export interface GateOptions {
   baseBranch?: string;
   // Check runs that must exist and pass before a merge, by name.
   requiredChecks?: readonly string[];
+  // The first wait between CI checks. Each wait after it doubles, up to
+  // ciPollMaxMs (15s unless set), so a slow CI costs a dozen API calls
+  // rather than one every few seconds.
   ciPollMs: number;
+  ciPollMaxMs?: number;
   ciTimeoutMs: number;
+  // False for a repo with no CI: no check runs at all then counts as passed.
+  // Defaults to true.
+  requireCi?: boolean;
   sleep?: (ms: number) => Promise<void>;
   onStateChange?: (state: GateState) => void;
   // How messages name this gate's repo, as in "owner/repo#4". Unset for the
@@ -360,13 +367,26 @@ export class Gate {
 
   private async waitForCi(pr: number, sha: string, count: number, required: number): Promise<CiState> {
     const checks = this.options.requiredChecks ?? [];
-    let ci = ciState(await this.github.listCheckRuns(sha), checks);
+    const requireCi = this.options.requireCi ?? true;
+    let runs = await this.github.listCheckRuns(sha);
+    // A repo marked as having no CI still gets one more look before nothing
+    // counts as a pass, in case a workflow is just slow to register.
+    if (!requireCi && runs.length === 0) {
+      await this.sleep(this.options.ciPollMs);
+      runs = await this.github.listCheckRuns(sha);
+    }
+    let ci = ciState(runs, checks, requireCi);
     if (ci === 'pending') {
       await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging ${this.ref(pr)}.`);
-      const polls = Math.ceil(this.options.ciTimeoutMs / this.options.ciPollMs);
-      for (let i = 0; i < polls && ci === 'pending'; i++) {
-        await this.sleep(this.options.ciPollMs);
-        ci = ciState(await this.github.listCheckRuns(sha), checks);
+      const maxWait = Math.max(this.options.ciPollMs, this.options.ciPollMaxMs ?? 15_000);
+      let wait = this.options.ciPollMs;
+      let waited = 0;
+      while (ci === 'pending' && waited < this.options.ciTimeoutMs) {
+        const step = Math.min(wait, this.options.ciTimeoutMs - waited);
+        await this.sleep(step);
+        waited += step;
+        ci = ciState(await this.github.listCheckRuns(sha), checks, requireCi);
+        wait = Math.min(wait * 2, maxWait);
       }
     }
     return ci;

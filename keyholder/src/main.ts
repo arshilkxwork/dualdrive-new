@@ -75,6 +75,7 @@ const gates = new RepoRouter(config.repositories, (target, isDefault) => {
     requiredChecks: own?.requiredChecks ?? config.requiredChecks,
     ciPollMs: 3000,
     ciTimeoutMs: config.ciTimeoutMs,
+    requireCi: own?.requireCi ?? config.requireCi,
     onStateChange: save,
     repoLabel: isDefault ? undefined : target.name,
   });

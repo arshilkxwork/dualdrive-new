@@ -50,6 +50,25 @@ GITHUB_SERVER="${GITHUB_SERVER%/}"
 server_url='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~-]+)*$'
 [[ "$GITHUB_SERVER" =~ $server_url ]] || die "GITHUB_SERVER_URL must be an https:// URL such as https://github.example.com"
 
+# Where the dependency scanners come from, for networks that reach registries
+# only through a mirror. Both are this .env's settings, never the pull
+# request's.
+OSV_IMAGE="${OSV_IMAGE:-ghcr.io/google/osv-scanner:v2.2.4}"
+image_ref='^[A-Za-z0-9][A-Za-z0-9._/:@-]*$'
+[[ "$OSV_IMAGE" =~ $image_ref ]] || die "OSV_IMAGE must be a container image name such as ghcr.io/google/osv-scanner:v2.2.4"
+NPM_AUDIT_REGISTRY="${NPM_AUDIT_REGISTRY:-https://registry.npmjs.org/}"
+registry_url='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
+[[ "$NPM_AUDIT_REGISTRY" =~ $registry_url ]] || die "NPM_AUDIT_REGISTRY must be an https:// URL"
+
+# How long the pull request's tests, and then the dependency scan, may run
+# before they're stopped, in seconds. A test that never ends would otherwise
+# hold the audit, and @auditor, forever.
+AUDIT_TEST_TIMEOUT="${AUDIT_TEST_TIMEOUT:-600}"
+AUDIT_SCAN_TIMEOUT="${AUDIT_SCAN_TIMEOUT:-300}"
+for limit in "$AUDIT_TEST_TIMEOUT" "$AUDIT_SCAN_TIMEOUT"; do
+  [[ "$limit" =~ ^[1-9][0-9]*$ ]] || die "AUDIT_TEST_TIMEOUT and AUDIT_SCAN_TIMEOUT must be whole seconds, at least 1"
+done
+
 # Another repo is cloned from that server by its name. Naming
 # GITHUB_REPOSITORY itself keeps UPSTREAM_REPO_URL.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
@@ -86,7 +105,41 @@ find_tool docker "$HOME/.docker/bin" /Applications/Docker.app/Contents/Resources
 docker info >/dev/null 2>&1 || die "Docker isn't running; start Docker Desktop first"
 
 TMPDIR=$(mktemp -d /tmp/dualdrive-audit-XXXXXX)
-trap 'rm -rf "$TMPDIR"' EXIT
+# The containers have names, so the time limit below and an early exit here
+# can both stop them.
+TEST_CONTAINER="dualdrive-audit-$$-tests"
+SCAN_CONTAINER="dualdrive-audit-$$-osv"
+# Both kills normally fail, the containers having already gone; || true
+# keeps set -e from ending the trap there, with the temporary folder left
+# behind and a failing exit status.
+trap 'docker kill "$TEST_CONTAINER" "$SCAN_CONTAINER" >/dev/null 2>&1 || true; rm -rf "$TMPDIR"' EXIT
+
+# docker run with a time limit: <seconds> <name> <stdout file> <stderr file or
+# "-" for the same file> <docker run arguments...>. Past the limit the
+# container is killed, a line saying so goes to stderr's file, and the
+# status is 124, as timeout(1) gives. macOS has no timeout(1).
+run_limited() {
+  local limit="$1" name="$2" out="$3" err="$4" pid waited=0
+  shift 4
+  if [ "$err" = "-" ]; then
+    docker run --name "$name" "$@" >"$out" 2>&1 &
+    err="$out"
+  else
+    docker run --name "$name" "$@" >"$out" 2>"$err" &
+  fi
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$waited" -ge "$limit" ]; then
+      docker kill "$name" >/dev/null 2>&1 || true
+      wait "$pid" 2>/dev/null || true
+      echo "audit/run.sh: stopped after ${limit}s, the time limit" >>"$err"
+      return 124
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$pid"
+}
 CLONE="$TMPDIR/repo"
 OUT="$TMPDIR/out"
 mkdir -p "$OUT"
@@ -99,7 +152,9 @@ mkdir -p "$OUT"
 # Prompts are off, so a repo git can't read fails here instead of waiting
 # for a password nobody will type.
 git_net() (
-  export GIT_TERMINAL_PROMPT=0
+  # No prompts, and a connection that moves less than 1KB/s for a minute is
+  # dropped rather than waited on.
+  export GIT_TERMINAL_PROMPT=0 GIT_HTTP_LOW_SPEED_LIMIT=1000 GIT_HTTP_LOW_SPEED_TIME=60
   if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
     GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$AUDIT_GITHUB_TOKEN" | base64 | tr -d '\n')"
     export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER/.extraheader" GIT_CONFIG_VALUE_0
@@ -177,9 +232,9 @@ if [ "$TEST_MODE" = default ] && [ ! -f "$CLONE/package.json" ]; then
   TEST_EXIT=3
 else
   set +e
-  docker run "${CONTAINER[@]}" \
+  run_limited "$AUDIT_TEST_TIMEOUT" "$TEST_CONTAINER" "$OUT/tests.log" - "${CONTAINER[@]}" \
     -v "$CLONE":/w:ro -w /w \
-    --entrypoint /bin/sh "$TEST_IMAGE" -c "$TEST_COMMAND" >"$OUT/tests.log" 2>&1
+    --entrypoint /bin/sh "$TEST_IMAGE" -c "$TEST_COMMAND"
   TEST_EXIT=$?
   set -e
 fi
@@ -208,29 +263,32 @@ if [ -f "$CLONE/package-lock.json" ]; then
   mkdir -p "$TMPDIR/npm-home"
   set +e
   (cd "$CLONE" && env -i PATH="$PATH" HOME="$TMPDIR/npm-home" \
-    npm audit --audit-level=high --json --registry=https://registry.npmjs.org/) >"$OUT/npm-audit.json" 2>/dev/null
+    npm audit --audit-level=high --json --registry="$NPM_AUDIT_REGISTRY") >"$OUT/npm-audit.json" 2>/dev/null
   set -e
 else
   echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
 fi
 
-# Every other ecosystem's lockfiles (pip, Poetry, uv, Go, Cargo, Bundler,
-# Composer, Maven, Gradle, pnpm, Yarn, NuGet, Mix, pub) through osv-scanner,
-# only when there is one, since the image is large. It reads the files and
-# asks osv.dev about the versions; it runs nothing from the pull request, in
-# a container with the checkout read-only and no capabilities.
-OSV_IMAGE="ghcr.io/google/osv-scanner:v2.2.4"
+# Every lockfile npm audit doesn't read through osv-scanner: other
+# ecosystems' (pip, Poetry, uv, Go, Cargo, Bundler, Composer, Maven, Gradle,
+# pnpm, Yarn, NuGet, Mix, pub), and package-lock.json files below the root,
+# as in a monorepo's apps/web/. Only when there is one, since the image is
+# large. It reads the files and asks osv.dev about the versions; it runs
+# nothing from the pull request, in a container with the checkout read-only
+# and no capabilities.
 other_lockfile="$(find "$CLONE" \( -path "$CLONE/.git" -o -name node_modules \) -prune -o -type f \( \
+  \( -name package-lock.json ! -path "$CLONE/package-lock.json" \) -o \
   -name 'requirements*.txt' -o -name Pipfile.lock -o -name poetry.lock -o -name uv.lock -o -name pdm.lock \
   -o -name go.mod -o -name Cargo.lock -o -name Gemfile.lock -o -name composer.lock -o -name pom.xml \
   -o -name gradle.lockfile -o -name pnpm-lock.yaml -o -name yarn.lock -o -name packages.lock.json \
   -o -name mix.lock -o -name pubspec.lock \) -print -quit)"
 if [ -n "$other_lockfile" ]; then
   set +e
-  docker run --rm --memory=1g --cpus=1.0 --pids-limit=256 \
+  run_limited "$AUDIT_SCAN_TIMEOUT" "$SCAN_CONTAINER" "$OUT/osv.json" "$OUT/osv.log" \
+    --rm --memory=1g --cpus=1.0 --pids-limit=256 \
     --cap-drop=ALL --security-opt=no-new-privileges \
     --read-only "--tmpfs=/tmp:rw,nosuid,nodev,size=256m" -e HOME=/tmp \
-    -v "$CLONE":/src:ro "$OSV_IMAGE" scan source --format json -r /src >"$OUT/osv.json" 2>"$OUT/osv.log"
+    -v "$CLONE":/src:ro "$OSV_IMAGE" scan source --format json -r /src
   echo "$?" >"$OUT/osv-exit"
   set -e
 else
@@ -259,7 +317,7 @@ fi
 GITHUB_API="${GITHUB_API%/}"
 page=1
 while :; do
-  curl -fsS ${AUTH[@]+"${AUTH[@]}"} \
+  curl -fsS --max-time 60 --retry 2 ${AUTH[@]+"${AUTH[@]}"} \
     -H "Accept: application/vnd.github+json" \
     "$GITHUB_API/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
     >"$OUT/files-$page.json"

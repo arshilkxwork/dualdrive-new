@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Runs audit/run.sh end to end, with Docker, against a throwaway copy of
-# demo-service, the way @auditor does. Eight pull requests:
+# demo-service, the way @auditor does. Ten pull requests:
 #
 #   1  adds a passing test that imports     tests pass: the whole checkout is
 #      from a new lib/ folder               mounted, head_sha is its commit
@@ -18,6 +18,9 @@
 #      vulnerable Django                    vulnerabilities
 #   8  on a third upstream with neither     tests fail with a message saying
 #      package.json nor .dualdrive.json     what to add
+#   9  adds a test that never ends          stopped at a 15s time limit
+#  10  adds client/package-lock.json with   osv-scanner reads the nested npm
+#      a vulnerable minimist                lockfile
 #
 # Pull request 1 also adds 120 notes, so its changed files take two pages of
 # the files API.
@@ -163,6 +166,34 @@ echo "# plain" >"$SRC/README.md"
 printf 'print("hello")\n' >"$SRC/hello.py"
 push_pr 8 "$WORK/plain.git"
 
+open_pr 9
+cat >"$SRC/test/e2e-hang.test.js" <<'EOF'
+import { test } from 'node:test';
+test('e2e: never ends', () => {
+  for (;;) {}
+});
+EOF
+push_pr 9
+
+open_pr 10
+mkdir -p "$SRC/client"
+cat >"$SRC/client/package-lock.json" <<'EOF'
+{
+  "name": "client",
+  "version": "0.1.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "client", "version": "0.1.0", "dependencies": { "minimist": "1.2.0" } },
+    "node_modules/minimist": {
+      "version": "1.2.0",
+      "resolved": "https://registry.npmjs.org/minimist/-/minimist-1.2.0.tgz"
+    }
+  }
+}
+EOF
+push_pr 10
+
 # GitHub's test merges, refs/pull/<n>/merge. #1's merges its own head, so the
 # checks run on it. #2's merges #1's head, as a stale one would after a push,
 # so the checks fall back to #2's head.
@@ -179,7 +210,7 @@ make_merge 2 "${HEADS[1]}"
 # What GitHub's files API would list for each pull request: every path that
 # differs from the branch it targets.
 mkdir -p "$WORK/files"
-for n in 1 2 3 4 5 6 7 8; do
+for n in 1 2 3 4 5 6 7 8 9 10; do
   base=main
   if [ "$n" -eq 6 ]; then
     base=configured
@@ -228,8 +259,12 @@ REGISTRY_PID=$!
 trap 'kill "$REGISTRY_PID" "$FILES_PID" 2>/dev/null || true' EXIT
 sleep 1
 
-for n in 1 2 3 4 5 6 7 8; do
+for n in 1 2 3 4 5 6 7 8 9 10; do
   upstream="$WORK/upstream.git"
+  test_limit=600
+  if [ "$n" -eq 9 ]; then
+    test_limit=15
+  fi
   if [ "$n" -eq 6 ]; then
     upstream="$WORK/configured.git"
   elif [ "$n" -eq 8 ]; then
@@ -238,10 +273,11 @@ for n in 1 2 3 4 5 6 7 8; do
   echo "auditing pull request $n"
   (cd "$WORK/project" && UPSTREAM_REPO_URL="file://$upstream" GITHUB_REPOSITORY="$REPO" \
     GITHUB_API_URL="http://127.0.0.1:$FILES_PORT" AUDIT_GITHUB_TOKEN='' AUDIT_E2E_PROBE=e2e-probe-value \
+    AUDIT_TEST_TIMEOUT="$test_limit" \
     bash audit/run.sh "$n") >"$WORK/report-$n.json"
 done
 
-node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" "${HEADS[7]}" "${HEADS[8]}" <<'EOF'
+node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" "${HEADS[7]}" "${HEADS[8]}" "${HEADS[9]}" "${HEADS[10]}" <<'EOF'
 const { readFileSync } = require('node:fs');
 const [work, repo, merge1, ...heads] = process.argv.slice(2);
 const report = (n) => JSON.parse(readFileSync(`${work}/report-${n}.json`, 'utf8'));
@@ -251,7 +287,7 @@ const expect = (ok, what) => {
   if (!ok) failures.push(what);
 };
 
-for (const n of [1, 2, 3, 4, 5, 6, 7, 8]) {
+for (const n of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
   const r = report(n);
   expect(r.pr === n, `#${n}: the report names pull request ${n}`);
   expect(r.repo === repo, `#${n}: the report names the repo`);
@@ -304,6 +340,18 @@ expect(
   report(6).test_config?.mode === 'custom' && report(6).proposed_test_config === undefined,
   "#6: the default branch's config is reported, and nothing is proposed",
 );
+
+const hung = report(9).tests;
+expect(
+  hung.passed === false && hung.exit_code === 124 && /stopped after 15s/.test(hung.tail),
+  '#9: a test that never ends is stopped at the time limit and fails',
+);
+const nested = report(10).osv;
+expect(
+  nested?.scanner === 'osv-scanner' && nested.total >= 1 && nested.packages?.[0]?.name === 'minimist',
+  `#10: osv-scanner reads client/package-lock.json and finds minimist 1.2.0${nested?.error ? ` (got: ${nested.error})` : ''}`,
+);
+expect(report(10).vulns.skipped === 'no package-lock.json', '#10: npm audit still reads only the root lockfile');
 
 const hits = readFileSync(`${work}/registry-hits.log`, 'utf8').trim();
 expect(hits === '', `#4: the pull request's registry saw no request${hits ? ` (got: ${hits})` : ''}`);
