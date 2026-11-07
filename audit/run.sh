@@ -85,9 +85,22 @@ CLONE="$TMPDIR/repo"
 OUT="$TMPDIR/out"
 mkdir -p "$OUT"
 
+# A private repo needs AUDIT_GITHUB_TOKEN for git as well as for the API. It
+# reaches git as an HTTP header through the environment, for github.com
+# only, and never goes into the clone URL or .git/config: the checkout,
+# .git included, is mounted into the container that runs the pull request's
+# code. Prompts are off, so a repo git can't read fails here instead of
+# waiting for a password nobody will type.
+GIT_NET=(env GIT_TERMINAL_PROMPT=0)
+if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
+  basic="$(printf 'x-access-token:%s' "$AUDIT_GITHUB_TOKEN" | base64 | tr -d '\n')"
+  GIT_NET+=(GIT_CONFIG_COUNT=1 "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader"
+    "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic $basic")
+fi
+
 # Builder's branch lives on its fork. refs/pull/<n>/head exists on the
 # upstream repo for every pull request, whichever fork it came from.
-git clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
+"${GIT_NET[@]}" git clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
 
 # How to run the tests, from .dualdrive.json on the default branch. It is read
 # before the pull request is checked out, so a pull request can't choose its
@@ -104,7 +117,7 @@ node "$SCRIPT_DIR/config.js" "$CONFIG_FILE" >"$TMPDIR/test-config"
   IFS= read -r TEST_MODE
 } <"$TMPDIR/test-config"
 
-git -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
+"${GIT_NET[@]}" git -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
 git -C "$CLONE" checkout --quiet "pr-$PR_NUM"
 HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
 

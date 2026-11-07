@@ -57,6 +57,10 @@ export interface Approvals {
 
 export interface GateState {
   approvals: Record<string, Approvals>;
+  // The latest verdict for each pull request, saved so a restart doesn't
+  // depend on the verdict still being in the room history it re-reads.
+  // Missing in state files written before it existed.
+  verdicts?: Record<string, ParsedVerdict>;
 }
 
 export interface GateOptions {
@@ -91,13 +95,23 @@ export class Gate {
   ) {
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.baseBranch = options.baseBranch ?? 'main';
+    for (const [pr, verdict] of Object.entries(state.verdicts ?? {})) {
+      this.verdicts.set(Number(pr), verdict);
+    }
   }
 
   // Called for every verdict tag the auditor posts, in the order posted. Only
-  // the latest one for each pull request counts.
+  // the latest one for each pull request counts. Replaying the room's history
+  // after a restart keeps that order: anything still in the history is newer
+  // than a saved verdict that has dropped out of it.
   recordVerdict(parsed: ParsedVerdict): void {
     const pr = parsed.kind === 'valid' ? parsed.verdict.pr : parsed.pr;
     this.verdicts.set(pr, parsed);
+    const saved = this.state.verdicts?.[pr];
+    if (!saved || JSON.stringify(saved) !== JSON.stringify(parsed)) {
+      this.state.verdicts = { ...this.state.verdicts, [pr]: parsed };
+      this.saveState();
+    }
   }
 
   // Approvals for the same pull request are handled one at a time, in order.
@@ -292,6 +306,9 @@ export class Gate {
     try {
       const result = await this.github.merge(pr, approvedSha, mergeMessage(current, approvals, ratedAs));
       delete this.state.approvals[pr];
+      // Merged, so its verdict will never be read again.
+      this.verdicts.delete(pr);
+      delete this.state.verdicts?.[pr];
       this.saveState();
       await this.room.post(`Merged ${this.ref(pr)} as ${short(result.sha)}: ${current.url}`);
       await this.room.record(`${this.ref(pr)} ${short(approvedSha)}: merged as ${result.sha}`);

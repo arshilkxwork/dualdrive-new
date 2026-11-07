@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Gate, type GateOptions, type GitHubPort, type PullRequest } from '../src/gate.ts';
+import { Gate, type GateOptions, type GateState, type GitHubPort, type PullRequest } from '../src/gate.ts';
 import { RepoRouter, parseRepositories } from '../src/repos.ts';
 import { parseVerdictTag, type CheckRun } from '../src/rules.ts';
 
@@ -448,4 +448,40 @@ test('a verdict for one repo does not count for the same number in another', asy
     .recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!);
   await router.route('org/repo-b')!.handleApproval(1, alice);
   assert.match(posts.at(-1)!, /No audit verdict yet for org\/repo-b#1/);
+});
+
+test('a saved verdict survives a restart, and a merge clears it', async () => {
+  const state: GateState = { approvals: {} };
+  let saves = 0;
+  const posts: string[] = [];
+  const room = { post: async (body: string) => void posts.push(body), record: async () => {} };
+  const options = { ciPollMs: 1, ciTimeoutMs: 3, sleep: async () => {}, onStateChange: () => void saves++ };
+  const tag = parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!;
+
+  const before = new Gate(new FakeGitHub(), room, state, options);
+  before.recordVerdict(tag);
+  before.recordVerdict(tag);
+  assert.equal(saves, 1, 'the same verdict again changes nothing, so it is saved once');
+  assert.deepEqual(state.verdicts?.['1'], tag);
+
+  // A new keyholder from the saved state, with no room history to replay.
+  const github = new FakeGitHub();
+  github.paths = ['README.md'];
+  const after = new Gate(github, room, JSON.parse(JSON.stringify(state)) as GateState, options);
+  await after.handleApproval(1, alice);
+  assert.deepEqual(github.merged, [A]);
+  assert.match(posts.at(-1)!, /^Merged #1/);
+});
+
+test('a merged pull request leaves no verdict behind', async () => {
+  const state: GateState = { approvals: {} };
+  const gate = new Gate(new FakeGitHub(), { post: async () => {}, record: async () => {} }, state, {
+    ciPollMs: 1,
+    ciTimeoutMs: 3,
+    sleep: async () => {},
+  });
+  gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!);
+  await gate.handleApproval(1, alice);
+  await gate.handleApproval(1, bob);
+  assert.deepEqual(state.verdicts, {});
 });

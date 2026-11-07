@@ -11,10 +11,12 @@ import { SwitchClient, type Frame } from './switch.ts';
 
 interface Persisted {
   connectionId?: string;
-  // GITHUB_REPOSITORY's approvals, where they have always been.
+  // GITHUB_REPOSITORY's approvals and verdicts, approvals where they have
+  // always been.
   approvals?: GateState['approvals'];
-  // EXTRA_REPOSITORIES' approvals, by lowercase "owner/repo".
-  repos?: Record<string, GateState['approvals']>;
+  verdicts?: GateState['verdicts'];
+  // EXTRA_REPOSITORIES' state, by lowercase "owner/repo".
+  repos?: Record<string, Partial<GateState>>;
 }
 
 interface ContextEntry {
@@ -44,12 +46,13 @@ const persisted = readPersisted();
 // One connection id for the life of this install: reopening with the same id
 // is how a dropped stream resumes instead of starting a new connection.
 const connectionId = persisted.connectionId ?? randomUUID();
-const state: GateState = { approvals: persisted.approvals ?? {} };
+const state: GateState = { approvals: persisted.approvals ?? {}, verdicts: persisted.verdicts ?? {} };
 const extraStates = new Map<string, GateState>();
 const save = () => {
-  const repos = Object.fromEntries([...extraStates].map(([key, extra]) => [key, extra.approvals]));
+  const repos = Object.fromEntries([...extraStates].map(([key, extra]) => [key, { approvals: extra.approvals, verdicts: extra.verdicts }]));
   const tmp = `${config.stateFile}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ connectionId, approvals: state.approvals, repos }, null, 2)}\n`);
+  const body = { connectionId, approvals: state.approvals, verdicts: state.verdicts, repos };
+  writeFileSync(tmp, `${JSON.stringify(body, null, 2)}\n`);
   renameSync(tmp, config.stateFile);
 };
 
@@ -59,13 +62,14 @@ const gates = new RepoRouter(config.repositories, (target, isDefault) => {
   let gateState = state;
   if (!isDefault) {
     const key = repoKey(target.name);
-    gateState = { approvals: persisted.repos?.[key] ?? {} };
+    gateState = { approvals: persisted.repos?.[key]?.approvals ?? {}, verdicts: persisted.repos?.[key]?.verdicts ?? {} };
     extraStates.set(key, gateState);
   }
+  const own = config.repoSettings.get(repoKey(target.name));
   return new Gate(createGitHub(config.githubToken, target.owner, target.repo, config.githubApiUrl), room, gateState, {
-    sensitivePaths: config.sensitivePaths,
-    baseBranch: config.baseBranch,
-    requiredChecks: config.requiredChecks,
+    sensitivePaths: own?.sensitivePaths ?? config.sensitivePaths,
+    baseBranch: own?.baseBranch ?? config.baseBranch,
+    requiredChecks: own?.requiredChecks ?? config.requiredChecks,
     ciPollMs: 3000,
     ciTimeoutMs: config.ciTimeoutMs,
     onStateChange: save,
