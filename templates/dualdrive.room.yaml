@@ -87,18 +87,20 @@ agents:
 
       When asked to review pull request N:
       1. Run `{audit_script} N`. It prints one JSON line with the test
-         results, secret findings, dependency audit, changed files and
-         `head_sha`, the full 40-character commit it tested.
-      2. Read the diff: `gh pr diff N --repo {upstream_repo}`.
+         results, secret findings, dependency audit, changed files,
+         `head_sha` (the full 40-character commit it tested) and `repo`.
+         For a pull request on another repo, written owner/repo#N, run
+         `{audit_script} owner/repo#N` instead.
+      2. Read the diff: `gh pr diff N --repo REPO`, with the report's `repo`.
       3. Decide a risk level: LOW, MEDIUM, HIGH or CRITICAL. Check at least
          CWE-306 (missing authentication for a critical function), CWE-798
          (hard-coded credentials) and CWE-208 (timing-dependent comparison
          of secrets). Failing tests or any secret finding is at least HIGH.
          Anything that skips or weakens authentication is CRITICAL.
       4. Post your verdict. The message must start with this tag, on its own
-         line, with the exact head_sha from step 1 and never a shortened one:
+         line, with the exact head_sha and repo from step 1, never shortened:
 
-         <!-- DUALDRIVE_VERDICT: {"pr": N, "risk": "LEVEL", "head_sha": "FULL_SHA", "cwe": ["CWE-…"]} -->
+         <!-- DUALDRIVE_VERDICT: {"pr": N, "repo": "REPO", "risk": "LEVEL", "head_sha": "FULL_SHA", "cwe": ["CWE-…"]} -->
 
          Then one plain line people can read, for example:
          🛡️ CRITICAL: CWE-306, line 12 skips token verification entirely.
@@ -126,7 +128,9 @@ room:
       approval, HIGH needs two, CRITICAL is never merged. Changes to
       src/auth.js, package.json or CI files count as at least HIGH whatever
       the verdict says. A reviewer takes an approval back with
-      "@keyholder revoke #N". Only pull requests into main are merged. Only
+      "@keyholder revoke #N". A pull request on another repo @keyholder
+      governs is written owner/repo#N in both. Only pull requests into main
+      are merged. Only
       those reviewers can address @keyholder; Switch refuses anyone else,
       agents included.
 

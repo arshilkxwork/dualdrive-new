@@ -180,9 +180,9 @@ GITHUB_REPOSITORY=arshilkxwork/dualdrive bash scripts/audit-e2e.sh   # needs Doc
 ## Known limitations
 
 - **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped. Revocations work the same way: one sent while it was down didn't happen, so send it again.
-- **CI waits up to 30 seconds.** After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
-- **One upstream repo per @keyholder.** `GITHUB_REPOSITORY` is fixed.
+- **CI waits up to two minutes** (`CI_TIMEOUT_MS`). After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
+- **Every repo shares one set of rules.** `EXTRA_REPOSITORIES` lets one @keyholder merge into more repos (`@keyholder approve owner/repo#4`), but `SENSITIVE_PATHS`, `BASE_BRANCH` and `REQUIRED_CHECKS` apply to all of them, and `GITHUB_TOKEN` must cover each one.
 - **The project's sensitive paths are a plain list.** `SENSITIVE_PATHS` takes exact files and folders (`internal/auth/,go.mod`). It doesn't understand glob patterns, and its default fits demo-service.
-- **`audit/run.sh` is written for demo-service.** It mounts `src/`, `test/` and `package.json` and runs `node --test`, so a repo in another language needs its own test step there.
+- **`audit/run.sh` defaults to demo-service.** It mounts `src/`, `test/` and `package.json` and runs `node --test`. A repo in another language commits a `.dualdrive.json` on its default branch, such as `{"image": "python:3.12-slim", "test_command": "pytest -q"}`. It is read from the default branch, never from the pull request, and changing it needs two approvals. The image needs `/bin/sh`, and the tests get no network, so dependencies have to be in the image or the repo.
 - **`mergeable_state` isn't used.** GitHub documents it as best-effort, so the merge waits on check runs instead.
 - **@auditor is still a model.** It can be fooled. The design limits what that costs (the floor, the commit pinning, the human approvals) rather than assuming it can't happen.

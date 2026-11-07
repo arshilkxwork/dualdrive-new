@@ -39,6 +39,9 @@ check() {
 
 check "no pull request number" 2 "usage: audit/run.sh <pr-number>" --
 check "a pull request number that isn't a number" 2 "usage: audit/run.sh <pr-number>" -- 12abc
+check "a repo target that isn't owner/repo#N" 2 "usage: audit/run.sh <pr-number>" -- "just-a-name#7"
+check "a repo target with a flag for an owner" 2 "usage: audit/run.sh <pr-number>" -- "-x/repo#7"
+check "an owner/repo#N target passes the usage check" 1 "do not guess it from the local checkout" -- "org/other-repo#7"
 check "UPSTREAM_REPO_URL unset" 1 "do not guess it from the local checkout" -- 7
 check "GITHUB_REPOSITORY unset" 1 "Set GITHUB_REPOSITORY=owner/repo" UPSTREAM_REPO_URL=https://example.invalid/r.git -- 7
 

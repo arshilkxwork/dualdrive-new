@@ -5,8 +5,11 @@ import {
   ciState,
   floorRisk,
   parseApproval,
+  parseApprovalTarget,
+  parseCiTimeoutMs,
   parseRequiredChecks,
   parseRevoke,
+  parseRevokeTarget,
   parseSensitivePaths,
   parseVerdictTag,
   requiredApprovals,
@@ -157,4 +160,60 @@ test('a file entry matches only that file, a folder entry everything under it', 
   assert.equal(floorRisk(['auth.go.bak', 'pkg/auth.go'], paths), 'LOW');
   assert.equal(floorRisk(['secrets/keys/a.pem'], paths), 'HIGH');
   assert.equal(floorRisk(['secretsfile'], paths), 'LOW');
+});
+
+test('CI_TIMEOUT_MS defaults to two minutes and refuses nonsense', () => {
+  assert.equal(parseCiTimeoutMs(undefined), 120_000);
+  assert.equal(parseCiTimeoutMs('  '), 120_000);
+  assert.equal(parseCiTimeoutMs('90000'), 90_000);
+  for (const bad of ['abc', '-5', '1.5', '500', '2m', '0x10']) {
+    assert.throws(() => parseCiTimeoutMs(bad), /CI_TIMEOUT_MS/, bad);
+  }
+});
+
+test('.dualdrive.json is always sensitive, since it decides how the audit runs its tests', () => {
+  assert.equal(floorRisk(['.dualdrive.json'], ['internal/']), 'HIGH');
+  assert.equal(floorRisk(['docs/.dualdrive.json.md'], ['internal/']), 'LOW');
+});
+
+test('a command can name another repo as owner/repo#N', () => {
+  assert.deepEqual(parseApprovalTarget('@keyholder approve #4', 'keyholder'), { repo: null, pr: 4 });
+  assert.deepEqual(parseApprovalTarget('@keyholder approve org/repo-a#4', 'keyholder'), { repo: 'org/repo-a', pr: 4 });
+  assert.deepEqual(parseApprovalTarget('@keyholder: approve PR my-org/web.app_2#17 lgtm', 'keyholder'), {
+    repo: 'my-org/web.app_2',
+    pr: 17,
+  });
+  assert.deepEqual(parseRevokeTarget('@keyholder revoke org/infra#9', 'keyholder'), { repo: 'org/infra', pr: 9 });
+  // The plain-number readers keep their meaning: GITHUB_REPOSITORY only.
+  assert.equal(parseApproval('@keyholder approve org/repo-a#4', 'keyholder'), null);
+  assert.equal(parseRevoke('@keyholder revoke org/repo-a#4', 'keyholder'), null);
+  for (const body of [
+    '@keyholder approve org/repo-a 4',
+    '@keyholder approve -org/repo#4',
+    '@keyholder approve org/repo#4x',
+    '@keyholder approve org/#4',
+    '@builder ask @keyholder approve org/repo#4',
+  ]) {
+    assert.equal(parseApprovalTarget(body, 'keyholder'), null, body);
+  }
+});
+
+test('a verdict can name its repo, and a bad repo name makes it malformed', () => {
+  const tag = (repo: string) =>
+    `<!-- DUALDRIVE_VERDICT: {"pr": 4, "repo": ${repo}, "risk": "LOW", "head_sha": "${SHA}"} -->`;
+  assert.deepEqual(parseVerdictTag(tag('"org/repo-b"')), {
+    kind: 'valid',
+    verdict: { pr: 4, risk: 'LOW', headSha: SHA, cwe: [], repo: 'org/repo-b' },
+  });
+  assert.deepEqual(parseVerdictTag(tag('"not a repo"')), {
+    kind: 'malformed',
+    pr: 4,
+    headSha: SHA,
+    reason: '"repo" is not an owner/repo name',
+    repo: 'not a repo',
+  });
+  assert.equal(parseVerdictTag(tag('7'))?.kind, 'malformed');
+  // A tag in another place still keeps its repo, so it lands on that repo's PR.
+  const quoted = parseVerdictTag(`see: ${tag('"org/repo-b"')}`);
+  assert.equal(quoted?.kind === 'malformed' && quoted.repo, 'org/repo-b');
 });

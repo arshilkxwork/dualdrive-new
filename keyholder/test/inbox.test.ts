@@ -75,3 +75,15 @@ test('the replies never mention anyone', () => {
   assert.ok(!USAGE.includes('@'));
   assert.ok(!NOT_A_REVIEWER.includes('@'));
 });
+
+test('a command for another repo carries the repo; one for the default repo carries none', () => {
+  assert.deepEqual(readMessage(from('alice', '@keyholder approve org/repo-a#1'), true, config), [
+    { kind: 'approve', pr: 1, reviewer: { key: '@switch-alice:local', label: 'alice' }, repo: 'org/repo-a' },
+  ]);
+  assert.deepEqual(readMessage(from('bob', '@keyholder revoke org/repo-b#2'), true, config), [
+    { kind: 'revoke', pr: 2, reviewer: { key: '@switch-bob:local', label: 'bob' }, repo: 'org/repo-b' },
+  ]);
+  assert.deepEqual(readMessage(from('mallory', '@keyholder approve org/repo-a#1'), true, config), [
+    { kind: 'reply', body: NOT_A_REVIEWER },
+  ]);
+});

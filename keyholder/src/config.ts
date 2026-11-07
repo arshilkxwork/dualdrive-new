@@ -1,7 +1,8 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseRequiredChecks, parseSensitivePaths } from './rules.ts';
+import { parseRepositories, type RepoName } from './repos.ts';
+import { parseCiTimeoutMs, parseRequiredChecks, parseSensitivePaths } from './rules.ts';
 
 const keyholderDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -39,18 +40,19 @@ export interface Config {
   sensitivePaths: readonly string[];
   baseBranch: string;
   requiredChecks: readonly string[];
+  ciTimeoutMs: number;
   githubToken: string;
   owner: string;
   repo: string;
+  // GITHUB_REPOSITORY first, then EXTRA_REPOSITORIES.
+  repositories: RepoName[];
   stateFile: string;
 }
 
 export function loadConfig(): Config {
   loadEnv();
-  const [owner, repo, ...rest] = required('GITHUB_REPOSITORY').split('/');
-  if (!owner || !repo || rest.length > 0) {
-    throw new Error('GITHUB_REPOSITORY must look like owner/repo');
-  }
+  const repositories = parseRepositories(required('GITHUB_REPOSITORY'), process.env.EXTRA_REPOSITORIES);
+  const { owner, repo } = repositories[0];
   return {
     bridgeUrl: required('SWITCH_BRIDGE_URL').replace(/\/+$/, ''),
     agentId: required('KEYHOLDER_AGENT_ID'),
@@ -62,9 +64,11 @@ export function loadConfig(): Config {
     sensitivePaths: parseSensitivePaths(process.env.SENSITIVE_PATHS),
     baseBranch: process.env.BASE_BRANCH?.trim() || 'main',
     requiredChecks: parseRequiredChecks(process.env.REQUIRED_CHECKS),
+    ciTimeoutMs: parseCiTimeoutMs(process.env.CI_TIMEOUT_MS),
     githubToken: required('GITHUB_TOKEN'),
     owner,
     repo,
+    repositories,
     stateFile: process.env.KEYHOLDER_STATE_FILE ?? resolve(keyholderDir, '.state.json'),
   };
 }
