@@ -1,6 +1,6 @@
 import { Octokit } from '@octokit/rest';
 import type { GitHubPort, PullRequest } from './gate.ts';
-import type { CheckRun } from './rules.ts';
+import { statusAsCheckRun, type CheckRun } from './rules.ts';
 
 // `baseUrl` is GITHUB_API_URL: GitHub Enterprise's API, or the sandbox's mock.
 export function createGitHub(token: string, owner: string, repo: string, baseUrl?: string): GitHubPort {
@@ -31,6 +31,9 @@ export function createGitHub(token: string, owner: string, repo: string, baseUrl
       return files.flatMap((file) => (file.previous_filename ? [file.filename, file.previous_filename] : [file.filename]));
     },
 
+    // Check runs (GitHub Actions and other apps) and commit statuses (Jenkins,
+    // CircleCI and anything else on the Statuses API) together. A required
+    // check can be either.
     async listCheckRuns(sha: string): Promise<CheckRun[]> {
       const runs = await octokit.paginate(octokit.rest.checks.listForRef, {
         owner,
@@ -38,7 +41,11 @@ export function createGitHub(token: string, owner: string, repo: string, baseUrl
         ref: sha,
         per_page: 100,
       });
-      return runs.map((run) => ({ name: run.name, status: run.status, conclusion: run.conclusion }));
+      const { data: combined } = await octokit.rest.repos.getCombinedStatusForRef({ owner, repo, ref: sha, per_page: 100 });
+      return [
+        ...runs.map((run) => ({ name: run.name, status: run.status, conclusion: run.conclusion })),
+        ...combined.statuses.map((status) => statusAsCheckRun(status)),
+      ];
     },
 
     // GitHub keeps its own "Merge pull request #N from ..." title and uses

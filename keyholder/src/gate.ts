@@ -81,6 +81,11 @@ export interface GateOptions {
 
 const short = (sha: string) => sha.slice(0, 7);
 
+// Verdicts kept in the state file. Past this, the lowest pull request
+// numbers go first; a pull request that loses its verdict this way just
+// needs a fresh audit.
+export const MAX_SAVED_VERDICTS = 500;
+
 export class Gate {
   private readonly verdicts = new Map<number, ParsedVerdict>();
   private readonly queues = new Map<number, Promise<void>>();
@@ -110,6 +115,26 @@ export class Gate {
     const saved = this.state.verdicts?.[pr];
     if (!saved || JSON.stringify(saved) !== JSON.stringify(parsed)) {
       this.state.verdicts = { ...this.state.verdicts, [pr]: parsed };
+      const numbers = Object.keys(this.state.verdicts)
+        .map(Number)
+        .sort((a, b) => a - b);
+      for (const old of numbers.slice(0, Math.max(0, numbers.length - MAX_SAVED_VERDICTS))) {
+        delete this.state.verdicts[old];
+        this.verdicts.delete(old);
+      }
+      this.saveState();
+    }
+  }
+
+  // Drops what the gate kept for a pull request that is merged or closed. A
+  // closed one that is reopened starts again from a fresh verdict and fresh
+  // approvals.
+  private forget(pr: number): void {
+    const had = pr in this.state.approvals || pr in (this.state.verdicts ?? {});
+    this.verdicts.delete(pr);
+    delete this.state.approvals[pr];
+    delete this.state.verdicts?.[pr];
+    if (had) {
       this.saveState();
     }
   }
@@ -162,10 +187,12 @@ export class Gate {
   private async evaluate(pr: number, reviewer: Reviewer): Promise<void> {
     const pull = await this.github.getPull(pr);
     if (pull.merged) {
+      this.forget(pr);
       await this.room.post(`${this.ref(pr)} is already merged.`);
       return;
     }
     if (pull.state !== 'open') {
+      this.forget(pr);
       await this.room.post(`${this.ref(pr)} is closed, so there's nothing to approve.`);
       return;
     }
@@ -305,11 +332,8 @@ export class Gate {
 
     try {
       const result = await this.github.merge(pr, approvedSha, mergeMessage(current, approvals, ratedAs));
-      delete this.state.approvals[pr];
-      // Merged, so its verdict will never be read again.
-      this.verdicts.delete(pr);
-      delete this.state.verdicts?.[pr];
-      this.saveState();
+      // Merged, so neither will be read again.
+      this.forget(pr);
       await this.room.post(`Merged ${this.ref(pr)} as ${short(result.sha)}: ${current.url}`);
       await this.room.record(`${this.ref(pr)} ${short(approvedSha)}: merged as ${result.sha}`);
     } catch (error) {

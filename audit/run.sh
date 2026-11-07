@@ -44,11 +44,17 @@ fi
 : "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — do not guess it from the local checkout, this script does not run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
 
-# Another repo is cloned from GitHub by its name. Naming GITHUB_REPOSITORY
-# itself keeps UPSTREAM_REPO_URL.
+# The GitHub that hosts the repos: github.com, or a GitHub Enterprise Server.
+GITHUB_SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+GITHUB_SERVER="${GITHUB_SERVER%/}"
+server_url='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~-]+)*$'
+[[ "$GITHUB_SERVER" =~ $server_url ]] || die "GITHUB_SERVER_URL must be an https:// URL such as https://github.example.com"
+
+# Another repo is cloned from that server by its name. Naming
+# GITHUB_REPOSITORY itself keeps UPSTREAM_REPO_URL.
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 if [ -n "$TARGET_REPO" ] && [ "$(lower "$TARGET_REPO")" != "$(lower "$GITHUB_REPOSITORY")" ]; then
-  UPSTREAM_REPO_URL="https://github.com/$TARGET_REPO.git"
+  UPSTREAM_REPO_URL="$GITHUB_SERVER/$TARGET_REPO.git"
   GITHUB_REPOSITORY="$TARGET_REPO"
 fi
 
@@ -85,22 +91,25 @@ CLONE="$TMPDIR/repo"
 OUT="$TMPDIR/out"
 mkdir -p "$OUT"
 
-# A private repo needs AUDIT_GITHUB_TOKEN for git as well as for the API. It
-# reaches git as an HTTP header through the environment, for github.com
-# only, and never goes into the clone URL or .git/config: the checkout,
-# .git included, is mounted into the container that runs the pull request's
-# code. Prompts are off, so a repo git can't read fails here instead of
-# waiting for a password nobody will type.
-GIT_NET=(env GIT_TERMINAL_PROMPT=0)
-if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
-  basic="$(printf 'x-access-token:%s' "$AUDIT_GITHUB_TOKEN" | base64 | tr -d '\n')"
-  GIT_NET+=(GIT_CONFIG_COUNT=1 "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader"
-    "GIT_CONFIG_VALUE_0=AUTHORIZATION: basic $basic")
-fi
+# git for anything that talks to the server. A private repo needs
+# AUDIT_GITHUB_TOKEN for git as well as for the API. It reaches git as an
+# HTTP header for GITHUB_SERVER_URL only, exported in a subshell: never on a
+# command line, where any user's ps could read it, and never in the clone
+# URL or .git/config, which the test container mounts with the checkout.
+# Prompts are off, so a repo git can't read fails here instead of waiting
+# for a password nobody will type.
+git_net() (
+  export GIT_TERMINAL_PROMPT=0
+  if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
+    GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$AUDIT_GITHUB_TOKEN" | base64 | tr -d '\n')"
+    export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="http.$GITHUB_SERVER/.extraheader" GIT_CONFIG_VALUE_0
+  fi
+  exec git "$@"
+)
 
 # Builder's branch lives on its fork. refs/pull/<n>/head exists on the
 # upstream repo for every pull request, whichever fork it came from.
-"${GIT_NET[@]}" git clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
+git_net clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
 
 # How to run the tests, from .dualdrive.json on the default branch. It is read
 # before the pull request is checked out, so a pull request can't choose its
@@ -117,9 +126,26 @@ node "$SCRIPT_DIR/config.js" "$CONFIG_FILE" >"$TMPDIR/test-config"
   IFS= read -r TEST_MODE
 } <"$TMPDIR/test-config"
 
-"${GIT_NET[@]}" git -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
+git_net -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
 git -C "$CLONE" checkout --quiet "pr-$PR_NUM"
 HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
+
+# Everything below checks what the base branch would become: GitHub's test
+# merge, refs/pull/<n>/merge, when there is one. It is used only when its
+# second parent is HEAD_SHA, the head the verdict will name; GitHub doesn't
+# make one for a pull request with conflicts, and can lag behind a new push,
+# and then the head itself is checked. The report says which. cat-file reads
+# the parents from the commit itself, since a depth-1 fetch has no history.
+TESTED_REF="head"
+TESTED_SHA="$HEAD_SHA"
+if git_net -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/merge:pr-$PR_NUM-merge" 2>/dev/null; then
+  merged_head="$(git -C "$CLONE" cat-file -p "pr-$PR_NUM-merge" | sed -n 's/^parent //p' | sed -n 2p)"
+  if [ "$merged_head" = "$HEAD_SHA" ]; then
+    git -C "$CLONE" checkout --quiet "pr-$PR_NUM-merge"
+    TESTED_REF="merge"
+    TESTED_SHA="$(git -C "$CLONE" rev-parse HEAD)"
+  fi
+fi
 
 # Tests, as untrusted code: no network, capped memory, CPU and processes, no
 # Linux capabilities, no setuid escalation, and a read-only filesystem apart
@@ -179,13 +205,13 @@ fi
 
 # Changed files, from the same API call @keyholder makes for its floor check,
 # every page of it. GITHUB_API_URL points it at GitHub Enterprise, or at the
-# stand-in scripts/audit-e2e.sh runs. A local git diff can't work here: both refs were fetched
-# at depth 1 and share no reachable merge base. demo-service is public, so a
-# token is optional; AUDIT_GITHUB_TOKEN, a read-only one, only raises the
-# rate limit.
+# stand-in scripts/audit-e2e.sh runs. A local git diff can't work here: the
+# refs were fetched at depth 1 and share no reachable merge base. The token
+# goes to curl in a header file only this user can read, not as an argument.
 AUTH=()
 if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
-  AUTH=(-H "Authorization: Bearer $AUDIT_GITHUB_TOKEN")
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$AUDIT_GITHUB_TOKEN" >"$TMPDIR/github-auth")
+  AUTH=(-H "@$TMPDIR/github-auth")
 else
   echo "audit/run.sh: AUDIT_GITHUB_TOKEN is unset; using unauthenticated GitHub API (rate limit: 60 req/hr)" >&2
 fi
@@ -205,4 +231,4 @@ done
 node -e 'console.log(JSON.stringify(process.argv.slice(1).flatMap((f) => JSON.parse(require("node:fs").readFileSync(f, "utf8")))))' \
   "$OUT"/files-*.json >"$OUT/files.json"
 
-node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT" "$GITHUB_REPOSITORY"
+node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT" "$GITHUB_REPOSITORY" "$TESTED_REF" "$TESTED_SHA"

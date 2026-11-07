@@ -145,6 +145,19 @@ export function parseRepoSettings(text: string | undefined, repos: readonly Repo
   return settings;
 }
 
+// SENSITIVE_PATHS describes GITHUB_REPOSITORY. Another repo inheriting it
+// would be protected by paths that may not exist in its codebase, so each
+// extra repo has to name its own, and keyholder won't start until it does.
+export function requireOwnSensitivePaths(repos: readonly RepoName[], settings: Map<string, RepoSettings>): void {
+  const missing = repos.slice(1).filter((repo) => !settings.get(repoKey(repo.name))?.sensitivePaths);
+  if (missing.length > 0) {
+    throw new Error(
+      `Set sensitive_paths in REPO_SETTINGS for ${missing.map((repo) => repo.name).join(', ')}: ` +
+        'SENSITIVE_PATHS only describes GITHUB_REPOSITORY',
+    );
+  }
+}
+
 // Names no handle, like every other reply.
 export function unknownRepoReply(name: string, known: readonly string[]): string {
   return `I only merge pull requests in ${known.join(', ')}, and ${name} isn't one of them.`;

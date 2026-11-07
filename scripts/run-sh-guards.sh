@@ -44,6 +44,10 @@ check "a repo target with a flag for an owner" 2 "usage: audit/run.sh <pr-number
 check "an owner/repo#N target passes the usage check" 1 "do not guess it from the local checkout" -- "org/other-repo#7"
 check "UPSTREAM_REPO_URL unset" 1 "do not guess it from the local checkout" -- 7
 check "GITHUB_REPOSITORY unset" 1 "Set GITHUB_REPOSITORY=owner/repo" UPSTREAM_REPO_URL=https://example.invalid/r.git -- 7
+check "GITHUB_SERVER_URL that isn't https" 2 "GITHUB_SERVER_URL must be an https:// URL" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r GITHUB_SERVER_URL=http://github.example.com -- 7
+check "GITHUB_SERVER_URL with a header in it" 2 "GITHUB_SERVER_URL must be an https:// URL" \
+  UPSTREAM_REPO_URL=https://example.invalid/r.git GITHUB_REPOSITORY=o/r "GITHUB_SERVER_URL=https://x.example/.extraheader=1" -- 7
 
 printf 'GITHUB_TOKEN=github_pat_not_a_real_one\n' >"$WORK/.env"
 check "keyholder's GITHUB_TOKEN in .env" 2 "holds keyholder's secrets" -- 7

@@ -7,6 +7,7 @@ import { createGitHub } from './github.ts';
 import { readMessage, type MessagePayload } from './inbox.ts';
 import { RepoRouter, repoKey, unknownRepoReply } from './repos.ts';
 import { Room } from './room.ts';
+import { restoreRepoState } from './state.ts';
 import { SwitchClient, type Frame } from './switch.ts';
 
 interface Persisted {
@@ -15,8 +16,9 @@ interface Persisted {
   // always been.
   approvals?: GateState['approvals'];
   verdicts?: GateState['verdicts'];
-  // EXTRA_REPOSITORIES' state, by lowercase "owner/repo".
-  repos?: Record<string, Partial<GateState>>;
+  // EXTRA_REPOSITORIES' state, by lowercase "owner/repo". restoreRepoState
+  // reads both shapes it has had.
+  repos?: Record<string, unknown>;
 }
 
 interface ContextEntry {
@@ -62,7 +64,7 @@ const gates = new RepoRouter(config.repositories, (target, isDefault) => {
   let gateState = state;
   if (!isDefault) {
     const key = repoKey(target.name);
-    gateState = { approvals: persisted.repos?.[key]?.approvals ?? {}, verdicts: persisted.repos?.[key]?.verdicts ?? {} };
+    gateState = restoreRepoState(persisted.repos?.[key]);
     extraStates.set(key, gateState);
   }
   const own = config.repoSettings.get(repoKey(target.name));

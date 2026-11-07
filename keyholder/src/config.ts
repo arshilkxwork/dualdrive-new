@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseRepoSettings, parseRepositories, type RepoName, type RepoSettings } from './repos.ts';
+import { parseRepoSettings, parseRepositories, requireOwnSensitivePaths, type RepoName, type RepoSettings } from './repos.ts';
 import { parseCiTimeoutMs, parseRequiredChecks, parseSensitivePaths } from './rules.ts';
 
 const keyholderDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -57,6 +57,8 @@ export function loadConfig(): Config {
   loadEnv();
   const repositories = parseRepositories(required('GITHUB_REPOSITORY'), process.env.EXTRA_REPOSITORIES);
   const { owner, repo } = repositories[0];
+  const repoSettings = parseRepoSettings(process.env.REPO_SETTINGS, repositories);
+  requireOwnSensitivePaths(repositories, repoSettings);
   return {
     bridgeUrl: required('SWITCH_BRIDGE_URL').replace(/\/+$/, ''),
     agentId: required('KEYHOLDER_AGENT_ID'),
@@ -74,7 +76,7 @@ export function loadConfig(): Config {
     owner,
     repo,
     repositories,
-    repoSettings: parseRepoSettings(process.env.REPO_SETTINGS, repositories),
+    repoSettings,
     stateFile: process.env.KEYHOLDER_STATE_FILE ?? resolve(keyholderDir, '.state.json'),
   };
 }

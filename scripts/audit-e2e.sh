@@ -138,6 +138,19 @@ test('e2e: passes', () => assert.equal(1 + 1, 2));
 EOF
 push_pr 6 "$WORK/configured.git"
 
+# GitHub's test merges, refs/pull/<n>/merge. #1's merges its own head, so the
+# checks run on it. #2's merges #1's head, as a stale one would after a push,
+# so the checks fall back to #2's head.
+MERGES=()
+make_merge() {
+  "${GIT[@]}" checkout -q -B "merge-$1" main
+  "${GIT[@]}" merge -q --no-ff --no-edit -m "Merge $2 into main" "$2"
+  "${GIT[@]}" push -q "$WORK/upstream.git" "HEAD:refs/pull/$1/merge"
+  MERGES[$1]="$("${GIT[@]}" rev-parse HEAD)"
+}
+make_merge 1 "${HEADS[1]}"
+make_merge 2 "${HEADS[1]}"
+
 # What GitHub's files API would list for each pull request: every path that
 # differs from the branch it targets.
 mkdir -p "$WORK/files"
@@ -199,9 +212,9 @@ for n in 1 2 3 4 5 6; do
     bash audit/run.sh "$n") >"$WORK/report-$n.json"
 done
 
-node - "$WORK" "$REPO" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" <<'EOF'
+node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" <<'EOF'
 const { readFileSync } = require('node:fs');
-const [work, repo, ...heads] = process.argv.slice(2);
+const [work, repo, merge1, ...heads] = process.argv.slice(2);
 const report = (n) => JSON.parse(readFileSync(`${work}/report-${n}.json`, 'utf8'));
 const failures = [];
 const expect = (ok, what) => {
@@ -222,6 +235,15 @@ for (const n of [1, 2, 3, 4, 5, 6]) {
   expect(Array.isArray(r.secrets?.findings), `#${n}: the secret scan ran`);
 }
 expect(report(1).changedPaths.length > 100, '#1: changedPaths read both pages of the files API');
+expect(
+  report(1).tested?.ref === 'merge' && report(1).tested?.sha === merge1,
+  "#1: the checks ran on GitHub's test merge, and head_sha is still the head",
+);
+expect(
+  report(2).tested?.ref === 'head' && report(2).tested?.sha === heads[1],
+  "#2: a test merge of some other head is ignored, and the head is checked",
+);
+expect(report(3).tested?.ref === 'head', '#3: no test merge, so the head is checked');
 expect(report(1).tests.passed === true, '#1: a passing test passes');
 expect(report(2).tests.passed === false && report(2).tests.fail >= 1, '#2: a failing test fails');
 const network = report(3).tests;
