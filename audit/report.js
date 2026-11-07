@@ -27,9 +27,18 @@ export function summarizeTests(log, exitCode) {
   };
 }
 
+// npm audit prints {"message": ..., "error": {...}} when it can't reach the
+// registry, and nothing at all for some failures. Both have to read as "the
+// audit didn't run": counting them would report zero vulnerabilities.
 export function summarizeNpmAudit(raw) {
+  if (raw === null || typeof raw !== 'object') {
+    return { error: 'npm audit produced no output it could read' };
+  }
   if (raw.skipped) {
     return { skipped: raw.skipped };
+  }
+  if (raw.error || !raw.metadata?.vulnerabilities) {
+    return { error: `npm audit didn't run: ${String(raw.message ?? raw.error?.summary ?? 'no vulnerability counts in its output').slice(0, 300)}` };
   }
   const counts = raw.metadata?.vulnerabilities ?? {};
   return {
@@ -47,6 +56,9 @@ export function summarizeOsv(raw, exit) {
   if (exit === 'skipped') {
     return { skipped: 'no lockfile osv-scanner reads' };
   }
+  if (exit === 'off') {
+    return { skipped: 'turned off with OSV_MODE=off on this machine; dependencies outside package-lock.json were not checked' };
+  }
   if (exit === '128') {
     return { skipped: 'osv-scanner found no packages in the lockfiles' };
   }
@@ -56,8 +68,11 @@ export function summarizeOsv(raw, exit) {
   if (exit === '125') {
     return { error: 'docker could not start osv-scanner (exit 125); is OSV_IMAGE reachable from this machine?' };
   }
-  if ((exit !== '0' && exit !== '1') || raw === null) {
+  if (exit !== '0' && exit !== '1') {
     return { error: `osv-scanner exited with ${exit}` };
+  }
+  if (raw === null) {
+    return { error: `osv-scanner exited with ${exit} but its output couldn't be read` };
   }
   let high = 0;
   let critical = 0;
@@ -128,7 +143,7 @@ if (isEntryPoint(import.meta.url)) {
     ...(testedRef ? { tested: { ref: testedRef, sha: testedSha } } : {}),
     tests: summarizeTests(readFileSync(join(outDir, 'tests.log'), 'utf8'), Number(testExit)),
     secrets: readJson(join(outDir, 'secrets.json')),
-    vulns: summarizeNpmAudit(readJson(join(outDir, 'npm-audit.json'))),
+    vulns: summarizeNpmAudit(readJsonIfThere(join(outDir, 'npm-audit.json'))),
     ...(existsSync(join(outDir, 'osv-exit'))
       ? {
           osv: summarizeOsv(

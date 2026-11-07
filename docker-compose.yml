@@ -35,6 +35,7 @@ services:
 
   keyholder:
     build: ./keyholder
+    init: true
     depends_on:
       mock-switch:
         condition: service_healthy

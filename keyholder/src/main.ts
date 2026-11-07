@@ -233,4 +233,14 @@ async function run(): Promise<never> {
   }
 }
 
+// As PID 1 in a container, Node ignores SIGTERM unless told otherwise, so
+// `docker stop` would wait ten seconds and then kill it. Saved state is
+// written atomically, so stopping between writes loses nothing.
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.on(signal, () => {
+    console.log(`[keyholder] ${signal}, stopping`);
+    process.exit(0);
+  });
+}
+
 void run();

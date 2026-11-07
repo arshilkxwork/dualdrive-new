@@ -44,6 +44,14 @@ fi
 : "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — do not guess it from the local checkout, this script does not run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
 
+# A token in the clone URL would be saved in .git/config, which the pull
+# request's tests can read and print. AUDIT_GITHUB_TOKEN reaches git without
+# being written anywhere.
+credentials_in_url='^https?://[^/]*@'
+if [[ "$UPSTREAM_REPO_URL" =~ $credentials_in_url ]]; then
+  die "UPSTREAM_REPO_URL has credentials in it, which would end up where the tests can read them. Remove them and set AUDIT_GITHUB_TOKEN instead"
+fi
+
 # The GitHub that hosts the repos: github.com, or a GitHub Enterprise Server.
 GITHUB_SERVER="${GITHUB_SERVER_URL:-https://github.com}"
 GITHUB_SERVER="${GITHUB_SERVER%/}"
@@ -59,6 +67,20 @@ image_ref='^[A-Za-z0-9][A-Za-z0-9._/:@-]*$'
 NPM_AUDIT_REGISTRY="${NPM_AUDIT_REGISTRY:-https://registry.npmjs.org/}"
 registry_url='^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9._~/-]*)?$'
 [[ "$NPM_AUDIT_REGISTRY" =~ $registry_url ]] || die "NPM_AUDIT_REGISTRY must be an https:// URL"
+
+# How osv-scanner looks vulnerabilities up. online asks osv.dev. offline
+# reads databases saved in OSV_DB_DIR and runs with no network, for
+# machines that can't reach osv.dev (README says how to fill it). off skips
+# it, and the report says so.
+OSV_MODE="${OSV_MODE:-online}"
+case "$OSV_MODE" in
+  online | off) ;;
+  offline)
+    [ -n "${OSV_DB_DIR:-}" ] && [ -d "${OSV_DB_DIR:-}" ] ||
+      die "OSV_MODE=offline needs OSV_DB_DIR, a directory holding osv-scanner's downloaded databases"
+    ;;
+  *) die "OSV_MODE must be online, offline or off" ;;
+esac
 
 # How long the pull request's tests, and then the dependency scan, may run
 # before they're stopped, in seconds. A test that never ends would otherwise
@@ -179,6 +201,9 @@ node "$SCRIPT_DIR/config.js" "$CONFIG_FILE" >"$TMPDIR/test-config"
   IFS= read -r TEST_IMAGE
   IFS= read -r TEST_COMMAND
   IFS= read -r TEST_MODE
+  IFS= read -r TEST_MEMORY_MB
+  IFS= read -r TEST_CPUS
+  IFS= read -r TEST_PIDS
 } <"$TMPDIR/test-config"
 node "$SCRIPT_DIR/config.js" --json "$CONFIG_FILE" >"$OUT/config.json"
 
@@ -218,11 +243,13 @@ fi
 
 # Tests, as untrusted code: no network, capped memory, CPU and processes, no
 # Linux capabilities, no setuid escalation, and a read-only filesystem apart
-# from /tmp, which is also HOME for tools that keep a cache there.
+# from /tmp, which is also HOME for tools that keep a cache there. The caps
+# are .dualdrive.json's when it sets them (512MB, 1 CPU, 64 processes when
+# not), and /tmp gets half the memory, since it lives in memory.
 CONTAINER=(--rm --network none
-  --memory=512m --cpus=1.0 --pids-limit=64
+  "--memory=${TEST_MEMORY_MB}m" "--cpus=$TEST_CPUS" "--pids-limit=$TEST_PIDS"
   --cap-drop=ALL --security-opt=no-new-privileges
-  --read-only "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=256m" -e HOME=/tmp)
+  --read-only "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=$((TEST_MEMORY_MB / 2))m" -e HOME=/tmp)
 # The whole checkout is mounted read-only, so code the tests import from
 # any folder is there. Without a .dualdrive.json the command is Node's,
 # which needs a package.json; a repo with neither gets a failing result that
@@ -263,7 +290,8 @@ if [ -f "$CLONE/package-lock.json" ]; then
   mkdir -p "$TMPDIR/npm-home"
   set +e
   (cd "$CLONE" && env -i PATH="$PATH" HOME="$TMPDIR/npm-home" \
-    npm audit --audit-level=high --json --registry="$NPM_AUDIT_REGISTRY") >"$OUT/npm-audit.json" 2>/dev/null
+    npm audit --audit-level=high --json --registry="$NPM_AUDIT_REGISTRY" \
+      --fetch-timeout=60000 --fetch-retries=2) >"$OUT/npm-audit.json" 2>/dev/null
   set -e
 else
   echo '{"skipped":"no package-lock.json"}' >"$OUT/npm-audit.json"
@@ -282,13 +310,21 @@ other_lockfile="$(find "$CLONE" \( -path "$CLONE/.git" -o -name node_modules \) 
   -o -name go.mod -o -name Cargo.lock -o -name Gemfile.lock -o -name composer.lock -o -name pom.xml \
   -o -name gradle.lockfile -o -name pnpm-lock.yaml -o -name yarn.lock -o -name packages.lock.json \
   -o -name mix.lock -o -name pubspec.lock \) -print -quit)"
-if [ -n "$other_lockfile" ]; then
+if [ -n "$other_lockfile" ] && [ "$OSV_MODE" = off ]; then
+  echo off >"$OUT/osv-exit"
+elif [ -n "$other_lockfile" ]; then
+  OSV_ARGS=(--rm --memory=1g --cpus=1.0 --pids-limit=256
+    --cap-drop=ALL --security-opt=no-new-privileges
+    --read-only "--tmpfs=/tmp:rw,nosuid,nodev,size=256m" -e HOME=/tmp
+    -v "$CLONE":/src:ro)
+  OSV_SCAN=(scan source --format json -r /src)
+  if [ "$OSV_MODE" = offline ]; then
+    OSV_ARGS+=(--network none -e OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/db -v "$OSV_DB_DIR":/db:ro)
+    OSV_SCAN+=(--offline-vulnerabilities)
+  fi
   set +e
   run_limited "$AUDIT_SCAN_TIMEOUT" "$SCAN_CONTAINER" "$OUT/osv.json" "$OUT/osv.log" \
-    --rm --memory=1g --cpus=1.0 --pids-limit=256 \
-    --cap-drop=ALL --security-opt=no-new-privileges \
-    --read-only "--tmpfs=/tmp:rw,nosuid,nodev,size=256m" -e HOME=/tmp \
-    -v "$CLONE":/src:ro "$OSV_IMAGE" scan source --format json -r /src
+    "${OSV_ARGS[@]}" "$OSV_IMAGE" "${OSV_SCAN[@]}"
   echo "$?" >"$OUT/osv-exit"
   set -e
 else

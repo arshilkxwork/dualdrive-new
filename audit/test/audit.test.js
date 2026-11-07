@@ -115,6 +115,9 @@ test('.dualdrive.json picks the image and test command', () => {
     image: 'python:3.12-slim',
     testCommand: 'pytest -q',
     mode: 'custom',
+    memoryMb: 512,
+    cpus: 1,
+    pids: 64,
   });
   assert.equal(
     parseAuditConfig('{"image": "ghcr.io/org/go@sha256:abc123", "test_command": "go test ./... && go vet ./..."}').image,
@@ -141,7 +144,14 @@ test('.dualdrive.json is refused when it is wrong, never half-read', () => {
 test('no .dualdrive.json means the demo-service defaults', () => {
   assert.deepEqual(loadAuditConfig(undefined), DEFAULT_AUDIT_CONFIG);
   assert.deepEqual(loadAuditConfig(join(tmpdir(), 'dualdrive-no-such-config.json')), DEFAULT_AUDIT_CONFIG);
-  assert.deepEqual(DEFAULT_AUDIT_CONFIG, { image: 'node:22', testCommand: 'node --test', mode: 'default' });
+  assert.deepEqual(DEFAULT_AUDIT_CONFIG, {
+    image: 'node:22',
+    testCommand: 'node --test',
+    mode: 'default',
+    memoryMb: 512,
+    cpus: 1,
+    pids: 64,
+  });
 });
 
 test('config.js prints one setting per line for run.sh, and exits 2 on a bad file', () => {
@@ -151,10 +161,10 @@ test('config.js prints one setting per line for run.sh, and exits 2 on a bad fil
     const good = join(root, 'good.json');
     writeFileSync(good, '{"image": "rust:1.82", "test_command": "cargo test --offline"}');
     const out = execFileSync(process.execPath, [join(auditDir, 'config.js'), good], { encoding: 'utf8' });
-    assert.equal(out, 'rust:1.82\ncargo test --offline\ncustom\n');
+    assert.equal(out, 'rust:1.82\ncargo test --offline\ncustom\n512\n1\n64\n');
     assert.equal(
       execFileSync(process.execPath, [join(auditDir, 'config.js'), join(root, 'missing.json')], { encoding: 'utf8' }),
-      'node:22\nnode --test\ndefault\n',
+      'node:22\nnode --test\ndefault\n512\n1\n64\n',
     );
     const bad = join(root, 'bad.json');
     writeFileSync(bad, '{"image": "-it"}');
@@ -196,7 +206,8 @@ test('osv-scanner results are counted by severity, and its exit code says the re
   assert.deepEqual(summarizeOsv(null, '2'), { error: 'osv-scanner exited with 2' });
   assert.match(summarizeOsv(null, '124').error, /time limit/);
   assert.match(summarizeOsv(null, '125').error, /OSV_IMAGE/);
-  assert.deepEqual(summarizeOsv(null, '1'), { error: 'osv-scanner exited with 1' });
+  assert.match(summarizeOsv(null, '1').error, /exited with 1 but its output couldn't be read/);
+  assert.match(summarizeOsv(null, 'off').skipped, /OSV_MODE=off/);
 });
 
 test('.dualdrive.json saved with a byte order mark still reads', () => {
@@ -214,8 +225,34 @@ test('config.js --json reports a refused file instead of failing', () => {
     const none = JSON.parse(
       execFileSync(process.execPath, [join(auditDir, 'config.js'), '--json', join(root, 'missing.json')], { encoding: 'utf8' }),
     );
-    assert.deepEqual(none, { image: 'node:22', test_command: 'node --test', mode: 'default' });
+    assert.deepEqual(none, { image: 'node:22', test_command: 'node --test', mode: 'default', memory_mb: 512, cpus: 1, pids: 64 });
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('.dualdrive.json can ask for more memory, CPUs and processes, within the caps', () => {
+  const heavy = parseAuditConfig('{"image": "maven:3-eclipse-temurin-21", "test_command": "mvn -o test", "memory": "2g", "cpus": 2, "pids": 512}');
+  assert.deepEqual([heavy.memoryMb, heavy.cpus, heavy.pids], [2048, 2, 512]);
+  assert.equal(parseAuditConfig('{"image": "x", "test_command": "y", "memory": "768M"}').memoryMb, 768);
+  for (const [extra, reason] of [
+    ['"memory": "8g"', /"memory"/],
+    ['"memory": "64m"', /"memory"/],
+    ['"memory": 2048', /"memory"/],
+    ['"cpus": 16', /"cpus"/],
+    ['"cpus": "2"', /"cpus"/],
+    ['"pids": 4096', /"pids"/],
+    ['"pids": 2.5', /"pids"/],
+  ]) {
+    assert.throws(() => parseAuditConfig(`{"image": "x", "test_command": "y", ${extra}}`), reason, extra);
+  }
+});
+
+test('npm audit that never reached its registry reads as not run, never as zero vulnerabilities', () => {
+  const offline = { message: 'request to https://registry.npmjs.org/-/npm/v1/security/advisories/bulk failed, reason: connect ECONNREFUSED', error: { summary: '', detail: '' } };
+  assert.match(summarizeNpmAudit(offline).error, /didn't run: request to .* failed/);
+  assert.deepEqual(Object.keys(summarizeNpmAudit(offline)), ['error']);
+  assert.match(summarizeNpmAudit(null).error, /no output/);
+  assert.match(summarizeNpmAudit({}).error, /no vulnerability counts/);
+  assert.deepEqual(summarizeNpmAudit({ metadata: { vulnerabilities: { high: 0, critical: 0, total: 0 } } }), { high: 0, critical: 0, total: 0 });
 });

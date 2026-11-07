@@ -12,8 +12,8 @@
 #   5  adds a failing test and a            tests still fail: the config is
 #      .dualdrive.json whose test command   read from the default branch, not
 #      is "true"                            from the pull request
-#   6  on a second upstream whose default   the configured command runs
-#      branch has a .dualdrive.json
+#   6  on a second upstream whose default   the configured command runs, with
+#      branch has a .dualdrive.json         the memory the file asks for
 #   7  adds a requirements.txt pinning a    osv-scanner reports critical
 #      vulnerable Django                    vulnerabilities
 #   8  on a third upstream with neither     tests fail with a message saying
@@ -21,6 +21,12 @@
 #   9  adds a test that never ends          stopped at a 15s time limit
 #  10  adds client/package-lock.json with   osv-scanner reads the nested npm
 #      a vulnerable minimist                lockfile
+#
+# Then three settings on this machine, on pull requests already audited:
+# #7 with OSV_MODE=off (skipped, and the report says so), #7 with
+# OSV_MODE=offline against a database downloaded here (found, with no
+# network), and #4 with an npm registry nobody answers (reported as not
+# run, never as zero vulnerabilities).
 #
 # Pull request 1 also adds 120 notes, so its changed files take two pages of
 # the files API.
@@ -137,7 +143,14 @@ push_pr 5
 git init -q --bare "$WORK/configured.git"
 git -C "$WORK/configured.git" symbolic-ref HEAD refs/heads/main
 "${GIT[@]}" checkout -q -B configured main
-printf '{"image": "node:22", "test_command": "node --test && echo dualdrive-config-in-use"}\n' >"$SRC/.dualdrive.json"
+cat >"$SRC/.dualdrive.json" <<'EOF'
+{
+  "image": "node:22",
+  "test_command": "node --test && (cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes) && echo dualdrive-config-in-use",
+  "memory": "768m",
+  "pids": 128
+}
+EOF
 "${GIT[@]}" add -A
 "${GIT[@]}" commit -qm "configured"
 "${GIT[@]}" push -q "$WORK/configured.git" HEAD:main
@@ -277,6 +290,26 @@ for n in 1 2 3 4 5 6 7 8 9 10; do
     bash audit/run.sh "$n") >"$WORK/report-$n.json"
 done
 
+# Settings on this machine, on pull requests already audited.
+audit_again() {
+  local n="$1" name="$2"
+  shift 2
+  echo "auditing pull request $n again ($name)"
+  (cd "$WORK/project" && env UPSTREAM_REPO_URL="file://$WORK/upstream.git" GITHUB_REPOSITORY="$REPO" \
+    GITHUB_API_URL="http://127.0.0.1:$FILES_PORT" AUDIT_GITHUB_TOKEN='' "$@" \
+    bash audit/run.sh "$n") >"$WORK/report-$n-$name.json"
+}
+audit_again 7 osv-off OSV_MODE=off
+# The databases offline mode reads, downloaded once for the ecosystems in a
+# requirements.txt, as an operator would on a machine that can reach osv.dev.
+mkdir -p "$WORK/osv-seed" "$WORK/osv-db"
+printf 'django==3.2.0\n' >"$WORK/osv-seed/requirements.txt"
+docker run --rm -e OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/db -v "$WORK/osv-db":/db -v "$WORK/osv-seed":/src:ro \
+  ghcr.io/google/osv-scanner:v2.2.4 scan source --offline-vulnerabilities --download-offline-databases -r /src \
+  >/dev/null 2>&1 || true
+audit_again 7 osv-offline OSV_MODE=offline OSV_DB_DIR="$WORK/osv-db"
+audit_again 4 npm-down NPM_AUDIT_REGISTRY=https://127.0.0.1:9/
+
 node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" "${HEADS[7]}" "${HEADS[8]}" "${HEADS[9]}" "${HEADS[10]}" <<'EOF'
 const { readFileSync } = require('node:fs');
 const [work, repo, merge1, ...heads] = process.argv.slice(2);
@@ -321,6 +354,10 @@ expect(
   report(6).tests.passed === true && report(6).tests.tail.includes('dualdrive-config-in-use'),
   "#6: the default branch's .dualdrive.json picks the test command",
 );
+expect(
+  report(6).tests.tail.includes(String(768 * 1024 * 1024)) && report(6).test_config?.memory_mb === 768,
+  "#6: the container gets the 768m of memory the file asks for",
+);
 
 expect(report(1).osv?.skipped === 'no lockfile osv-scanner reads', '#1: no other lockfile, so osv-scanner is skipped');
 const osv = report(7).osv;
@@ -352,6 +389,19 @@ expect(
   `#10: osv-scanner reads client/package-lock.json and finds minimist 1.2.0${nested?.error ? ` (got: ${nested.error})` : ''}`,
 );
 expect(report(10).vulns.skipped === 'no package-lock.json', '#10: npm audit still reads only the root lockfile');
+
+const again = (name) => JSON.parse(readFileSync(`${work}/report-${name}.json`, 'utf8'));
+expect(/OSV_MODE=off/.test(again('7-osv-off').osv?.skipped ?? ''), '#7 with OSV_MODE=off: skipped, and the report says why');
+const offline = again('7-osv-offline').osv;
+expect(
+  offline?.scanner === 'osv-scanner' && offline.critical >= 1,
+  `#7 with OSV_MODE=offline: Django's vulnerabilities found from the saved database, with no network${offline?.error ? ` (got: ${offline.error})` : ''}`,
+);
+const npmDown = again('4-npm-down').vulns;
+expect(
+  typeof npmDown?.error === 'string' && npmDown.total === undefined,
+  `#4 with an unreachable registry: npm audit is reported as not run, not as zero${npmDown?.error ? '' : ` (got: ${JSON.stringify(npmDown)})`}`,
+);
 
 const hits = readFileSync(`${work}/registry-hits.log`, 'utf8').trim();
 expect(hits === '', `#4: the pull request's registry saw no request${hits ? ` (got: ${hits})` : ''}`);
