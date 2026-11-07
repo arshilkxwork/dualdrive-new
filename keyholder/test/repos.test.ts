@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { RepoRouter, parseRepoSettings, parseRepositories, unknownRepoReply } from '../src/repos.ts';
+import { RepoRouter, parseRepoSettings, parseRepositories, requireOwnSensitivePaths, unknownRepoReply } from '../src/repos.ts';
 
 test('GITHUB_REPOSITORY comes first, then EXTRA_REPOSITORIES without repeats', () => {
   const repos = parseRepositories('org/backend', ' org/frontend, ORG/Backend ,org/infra,, ');
@@ -70,4 +70,19 @@ test('REPO_SETTINGS refuses anything it would have to guess at', () => {
   for (const [text, reason] of Object.entries(refused)) {
     assert.throws(() => parseRepoSettings(text, repos), reason, text);
   }
+});
+
+test('every extra repo has to name its own sensitive paths', () => {
+  const repos = parseRepositories('org/api', 'org/web,org/infra');
+  assert.throws(
+    () => requireOwnSensitivePaths(repos, parseRepoSettings('{"org/web": {"base_branch": "master"}}', repos)),
+    /Set sensitive_paths in REPO_SETTINGS for org\/web, org\/infra/,
+  );
+  const both = parseRepoSettings(
+    '{"org/web": {"sensitive_paths": ["auth/"]}, "org/infra": {"sensitive_paths": ["terraform/"]}}',
+    repos,
+  );
+  assert.doesNotThrow(() => requireOwnSensitivePaths(repos, both));
+  // The default repo is covered by SENSITIVE_PATHS.
+  assert.doesNotThrow(() => requireOwnSensitivePaths(parseRepositories('org/api', undefined), new Map()));
 });

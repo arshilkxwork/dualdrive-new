@@ -160,9 +160,10 @@ function parseCommand(body: string, handle: string, verb: string): CommandTarget
 }
 
 // demo-service's own sensitive paths. SENSITIVE_PATHS replaces this list for
-// a repo laid out differently. An entry ending in "/" covers everything
-// under that folder; any other entry is one file, so src/auth.js is listed
-// by name because "src/auth/" alone would miss it.
+// a repo laid out differently. An entry covers that exact path and, whether
+// or not it ends in "/", everything under it: "src/auth" and "src/auth/"
+// both cover src/auth/login.ts, and neither covers src/authority.js. So
+// src/auth.js is listed by name because "src/auth/" alone would miss it.
 export const DEFAULT_SENSITIVE_PATHS: readonly string[] = ['src/auth.js', 'src/auth/', 'package.json', 'package-lock.json'];
 
 // Paths that raise a pull request to at least HIGH whatever the auditor says.
@@ -174,7 +175,10 @@ export function isSensitivePath(path: string, projectPaths: readonly string[] = 
     path === '.dualdrive.json' ||
     // .env, .env.local and the like, and direnv's .envrc; not .environment.
     /(^|\/)\.env(rc)?(\.|\/|$)/i.test(path) ||
-    projectPaths.some((entry) => (entry.endsWith('/') ? path.startsWith(entry) : path === entry))
+    projectPaths.some((entry) => {
+      const folder = entry.endsWith('/') ? entry : `${entry}/`;
+      return path === entry || path.startsWith(folder);
+    })
   );
 }
 
@@ -236,6 +240,21 @@ export function ciState(runs: CheckRun[], requiredChecks: readonly string[] = []
     return 'pending';
   }
   return finished.length === runs.length ? 'passed' : 'pending';
+}
+
+// A commit status (the older Statuses API that Jenkins, CircleCI and others
+// report through) as a check run, so ciState weighs both the same way.
+// "error" fails like "failure"; anything unknown is still pending.
+export function statusAsCheckRun(status: { context: string; state: string }): CheckRun {
+  switch (status.state) {
+    case 'success':
+      return { name: status.context, status: 'completed', conclusion: 'success' };
+    case 'failure':
+    case 'error':
+      return { name: status.context, status: 'completed', conclusion: 'failure' };
+    default:
+      return { name: status.context, status: 'in_progress', conclusion: null };
+  }
 }
 
 // Reads a comma-separated REQUIRED_CHECKS value. Unset or empty means none,

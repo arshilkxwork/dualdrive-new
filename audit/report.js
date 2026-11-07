@@ -1,9 +1,13 @@
 // Combines the files audit/run.sh wrote into the one JSON line @auditor reads.
 //
-//   node audit/report.js <out-dir> <pr-number> <head-sha> <test-exit-code> [owner/repo]
+//   node audit/report.js <out-dir> <pr-number> <head-sha> <test-exit-code> [owner/repo] [tested-ref tested-sha]
 //
 // `repo` is the repo the pull request is on. @auditor copies it into its
 // verdict tag, so @keyholder knows which repo's #N the verdict is for.
+// `tested` says what the checks ran on: "merge", GitHub's test merge of the
+// head into the base branch, or "head" when there wasn't a current one.
+// head_sha is the pull request's head either way; that is what a verdict
+// pins.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -51,11 +55,12 @@ function readJson(path) {
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const [outDir, pr, headSha, testExit, repo] = process.argv.slice(2);
+  const [outDir, pr, headSha, testExit, repo, testedRef, testedSha] = process.argv.slice(2);
   const report = {
     ...(repo ? { repo } : {}),
     pr: Number(pr),
     head_sha: headSha,
+    ...(testedRef ? { tested: { ref: testedRef, sha: testedSha } } : {}),
     tests: summarizeTests(readFileSync(join(outDir, 'tests.log'), 'utf8'), Number(testExit)),
     secrets: readJson(join(outDir, 'secrets.json')),
     vulns: summarizeNpmAudit(readJson(join(outDir, 'npm-audit.json'))),

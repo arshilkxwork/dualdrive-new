@@ -12,6 +12,7 @@ import {
   parseRevokeTarget,
   parseSensitivePaths,
   parseVerdictTag,
+  statusAsCheckRun,
   requiredApprovals,
 } from '../src/rules.ts';
 
@@ -216,4 +217,33 @@ test('a verdict can name its repo, and a bad repo name makes it malformed', () =
   // A tag in another place still keeps its repo, so it lands on that repo's PR.
   const quoted = parseVerdictTag(`see: ${tag('"org/repo-b"')}`);
   assert.equal(quoted?.kind === 'malformed' && quoted.repo, 'org/repo-b');
+});
+
+test('a sensitive path covers its folder with or without the trailing slash', () => {
+  for (const entry of ['src/auth', 'src/auth/']) {
+    assert.equal(floorRisk(['src/auth/login.ts'], [entry]), 'HIGH', entry);
+    assert.equal(floorRisk(['src/auth'], [entry]), entry === 'src/auth' ? 'HIGH' : 'LOW', entry);
+    assert.equal(floorRisk(['src/authority.js'], [entry]), 'LOW', entry);
+  }
+  assert.equal(floorRisk(['package.json'], ['package.json']), 'HIGH');
+  assert.equal(floorRisk(['package.json.bak'], ['package.json']), 'LOW');
+});
+
+test('commit statuses count like check runs, and a failed one fails', () => {
+  assert.deepEqual(statusAsCheckRun({ context: 'ci/jenkins', state: 'success' }), {
+    name: 'ci/jenkins',
+    status: 'completed',
+    conclusion: 'success',
+  });
+  assert.equal(statusAsCheckRun({ context: 'ci/jenkins', state: 'pending' }).status, 'in_progress');
+  for (const state of ['failure', 'error']) {
+    assert.equal(statusAsCheckRun({ context: 'c', state }).conclusion, 'failure', state);
+  }
+  // A required check that only reports as a status is found and decides.
+  assert.equal(ciState([statusAsCheckRun({ context: 'ci/jenkins', state: 'success' })], ['ci/jenkins']), 'passed');
+  assert.equal(ciState([statusAsCheckRun({ context: 'ci/jenkins', state: 'pending' })], ['ci/jenkins']), 'pending');
+  assert.equal(
+    ciState([{ name: 'test', status: 'completed', conclusion: 'success' }, statusAsCheckRun({ context: 'ci/jenkins', state: 'error' })], ['test']),
+    'failed',
+  );
 });

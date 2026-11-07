@@ -96,6 +96,15 @@ test('the scripts still run when called through a symlinked path', () => {
       { encoding: 'utf8' },
     );
     assert.equal(JSON.parse(withRepo).repo, 'org/repo-b');
+    assert.equal(JSON.parse(withRepo).tested, undefined);
+
+    const merged = execFileSync(
+      process.execPath,
+      [join(linked, 'report.js'), out, '4', 'a'.repeat(40), '0', 'org/repo-b', 'merge', 'b'.repeat(40)],
+      { encoding: 'utf8' },
+    );
+    assert.deepEqual(JSON.parse(merged).tested, { ref: 'merge', sha: 'b'.repeat(40) });
+    assert.equal(JSON.parse(merged).head_sha, 'a'.repeat(40));
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

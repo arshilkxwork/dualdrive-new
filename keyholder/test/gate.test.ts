@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Gate, type GateOptions, type GateState, type GitHubPort, type PullRequest } from '../src/gate.ts';
+import { Gate, MAX_SAVED_VERDICTS, type GateOptions, type GateState, type GitHubPort, type PullRequest } from '../src/gate.ts';
 import { RepoRouter, parseRepositories } from '../src/repos.ts';
 import { parseVerdictTag, type CheckRun } from '../src/rules.ts';
 
@@ -484,4 +484,37 @@ test('a merged pull request leaves no verdict behind', async () => {
   await gate.handleApproval(1, alice);
   await gate.handleApproval(1, bob);
   assert.deepEqual(state.verdicts, {});
+});
+
+test('a closed or merged pull request leaves no verdict or approvals behind', async () => {
+  for (const pull of [{ state: 'closed' as const, merged: false }, { state: 'closed' as const, merged: true }]) {
+    const github = new FakeGitHub();
+    const state: GateState = {
+      approvals: { '1': { headSha: A, reviewers: ['@switch-user-a:local'] } },
+      verdicts: { '1': parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)! },
+    };
+    const gate = new Gate(github, { post: async () => {}, record: async () => {} }, state, {
+      ciPollMs: 1,
+      ciTimeoutMs: 3,
+      sleep: async () => {},
+    });
+    github.pull = { ...github.pull, ...pull };
+    await gate.handleApproval(1, bob);
+    assert.deepEqual(state.approvals, {}, JSON.stringify(pull));
+    assert.deepEqual(state.verdicts, {}, JSON.stringify(pull));
+  }
+});
+
+test('the state file keeps at most MAX_SAVED_VERDICTS verdicts, dropping the oldest pull requests', () => {
+  const state: GateState = { approvals: {} };
+  const gate = new Gate(new FakeGitHub(), { post: async () => {}, record: async () => {} }, state, {
+    ciPollMs: 1,
+    ciTimeoutMs: 3,
+  });
+  for (let pr = 1; pr <= MAX_SAVED_VERDICTS + 5; pr++) {
+    gate.recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": ${pr}, "risk": "LOW", "head_sha": "${A}"} -->`)!);
+  }
+  const kept = Object.keys(state.verdicts!).map(Number);
+  assert.equal(kept.length, MAX_SAVED_VERDICTS);
+  assert.equal(Math.min(...kept), 6);
 });
