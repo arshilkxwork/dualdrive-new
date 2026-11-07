@@ -52,7 +52,10 @@ export function summarizeNpmAudit(raw) {
 // code says what happened: 0 nothing found, 1 vulnerabilities, 128 no
 // packages it could read. Severity is each vulnerability group's highest
 // CVSS score: 7 and up is high, 9 and up critical, as npm counts them.
-export function summarizeOsv(raw, exit) {
+// `mode` is OSV_MODE, and `logTail` the last line osv-scanner wrote to
+// stderr, which says why it stopped when it fails.
+export function summarizeOsv(raw, exit, mode = 'online', logTail = '') {
+  const why = logTail ? `: ${logTail.slice(0, 300)}` : '';
   if (exit === 'skipped') {
     return { skipped: 'no lockfile osv-scanner reads' };
   }
@@ -68,8 +71,11 @@ export function summarizeOsv(raw, exit) {
   if (exit === '125') {
     return { error: 'docker could not start osv-scanner (exit 125); is OSV_IMAGE reachable from this machine?' };
   }
+  if (exit === '127' && mode === 'offline') {
+    return { error: `osv-scanner found no usable database in OSV_DB_DIR for these lockfiles (exit 127)${why}` };
+  }
   if (exit !== '0' && exit !== '1') {
-    return { error: `osv-scanner exited with ${exit}` };
+    return { error: `osv-scanner exited with ${exit}${why}` };
   }
   if (raw === null) {
     return { error: `osv-scanner exited with ${exit} but its output couldn't be read` };
@@ -122,6 +128,13 @@ function readJson(path) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+function lastLine(path) {
+  if (!existsSync(path)) {
+    return '';
+  }
+  return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).at(-1) ?? '';
+}
+
 function readJsonIfThere(path) {
   if (!existsSync(path)) {
     return null;
@@ -149,6 +162,8 @@ if (isEntryPoint(import.meta.url)) {
           osv: summarizeOsv(
             readJsonIfThere(join(outDir, 'osv.json')),
             readFileSync(join(outDir, 'osv-exit'), 'utf8').trim(),
+            existsSync(join(outDir, 'osv-mode')) ? readFileSync(join(outDir, 'osv-mode'), 'utf8').trim() : 'online',
+            lastLine(join(outDir, 'osv.log')),
           ),
         }
       : {}),

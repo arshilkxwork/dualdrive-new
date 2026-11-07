@@ -42,6 +42,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO=e2e/demo-service
 
+# This script runs docker itself too, not only through run.sh, so it needs
+# the same lookup run.sh does when Docker Desktop's CLI isn't on PATH.
+if ! command -v docker >/dev/null 2>&1; then
+  for dir in "$HOME/.docker/bin" /Applications/Docker.app/Contents/Resources/bin /usr/local/bin /opt/homebrew/bin; do
+    if [ -x "$dir/docker" ]; then
+      PATH="$dir:$PATH"
+      break
+    fi
+  done
+fi
+command -v docker >/dev/null 2>&1 || { echo "audit-e2e.sh: can't find docker" >&2; exit 2; }
+
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/audit-e2e-XXXXXX")"
 echo "working in $WORK"
 
@@ -304,10 +316,17 @@ audit_again 7 osv-off OSV_MODE=off
 # requirements.txt, as an operator would on a machine that can reach osv.dev.
 mkdir -p "$WORK/osv-seed" "$WORK/osv-db"
 printf 'django==3.2.0\n' >"$WORK/osv-seed/requirements.txt"
+# Exit 1 here only means it found Django's vulnerabilities while downloading.
+download=0
 docker run --rm -e OSV_SCANNER_LOCAL_DB_CACHE_DIRECTORY=/db -v "$WORK/osv-db":/db -v "$WORK/osv-seed":/src:ro \
   ghcr.io/google/osv-scanner:v2.2.4 scan source --offline-vulnerabilities --download-offline-databases -r /src \
-  >/dev/null 2>&1 || true
+  >"$WORK/osv-download.log" 2>&1 || download=$?
+if [ "$download" -gt 1 ]; then
+  echo "downloading the osv databases failed (exit $download); see $WORK/osv-download.log"
+fi
 audit_again 7 osv-offline OSV_MODE=offline OSV_DB_DIR="$WORK/osv-db"
+mkdir -p "$WORK/osv-db-empty"
+audit_again 7 osv-no-db OSV_MODE=offline OSV_DB_DIR="$WORK/osv-db-empty"
 audit_again 4 npm-down NPM_AUDIT_REGISTRY=https://127.0.0.1:9/
 
 node - "$WORK" "$REPO" "${MERGES[1]}" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" "${HEADS[7]}" "${HEADS[8]}" "${HEADS[9]}" "${HEADS[10]}" <<'EOF'
@@ -396,6 +415,11 @@ const offline = again('7-osv-offline').osv;
 expect(
   offline?.scanner === 'osv-scanner' && offline.critical >= 1,
   `#7 with OSV_MODE=offline: Django's vulnerabilities found from the saved database, with no network${offline?.error ? ` (got: ${offline.error})` : ''}`,
+);
+const noDb = again('7-osv-no-db').osv;
+expect(
+  /no usable database in OSV_DB_DIR/.test(noDb?.error ?? ''),
+  `#7 offline with an empty OSV_DB_DIR: the report says the database is missing${noDb?.error ? '' : ` (got: ${JSON.stringify(noDb)})`}`,
 );
 const npmDown = again('4-npm-down').vulns;
 expect(
