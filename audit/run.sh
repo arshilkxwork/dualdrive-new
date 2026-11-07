@@ -326,6 +326,7 @@ elif [ -n "$other_lockfile" ]; then
   run_limited "$AUDIT_SCAN_TIMEOUT" "$SCAN_CONTAINER" "$OUT/osv.json" "$OUT/osv.log" \
     "${OSV_ARGS[@]}" "$OSV_IMAGE" "${OSV_SCAN[@]}"
   echo "$?" >"$OUT/osv-exit"
+  echo "$OSV_MODE" >"$OUT/osv-mode"
   set -e
 else
   echo skipped >"$OUT/osv-exit"

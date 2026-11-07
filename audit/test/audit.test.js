@@ -208,6 +208,10 @@ test('osv-scanner results are counted by severity, and its exit code says the re
   assert.match(summarizeOsv(null, '125').error, /OSV_IMAGE/);
   assert.match(summarizeOsv(null, '1').error, /exited with 1 but its output couldn't be read/);
   assert.match(summarizeOsv(null, 'off').skipped, /OSV_MODE=off/);
+  const noDb = summarizeOsv(null, '127', 'offline', 'failed to initialize accessors: mkdir /db/osv-scanner: read-only file system');
+  assert.match(noDb.error, /no usable database in OSV_DB_DIR .*exit 127.*read-only file system/);
+  assert.equal(summarizeOsv(null, '127', 'online').error, 'osv-scanner exited with 127');
+  assert.match(summarizeOsv(null, '2', 'online', 'boom').error, /exited with 2: boom/);
 });
 
 test('.dualdrive.json saved with a byte order mark still reads', () => {
