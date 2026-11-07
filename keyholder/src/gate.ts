@@ -70,6 +70,9 @@ export interface GateOptions {
   ciTimeoutMs: number;
   sleep?: (ms: number) => Promise<void>;
   onStateChange?: (state: GateState) => void;
+  // How messages name this gate's repo, as in "owner/repo#4". Unset for the
+  // default repo, whose pull requests are plain "#4".
+  repoLabel?: string;
 }
 
 const short = (sha: string) => sha.slice(0, 7);
@@ -111,7 +114,7 @@ export class Gate {
   async handleRevoke(pr: number, reviewer: Reviewer): Promise<void> {
     const approvals = this.state.approvals[pr];
     if (!approvals?.reviewers.includes(reviewer.key)) {
-      await this.room.post(`${reviewer.label} hasn't approved #${pr}, so there's nothing to take back.`);
+      await this.room.post(`${reviewer.label} hasn't approved ${this.ref(pr)}, so there's nothing to take back.`);
       return;
     }
     approvals.reviewers = approvals.reviewers.filter((key) => key !== reviewer.key);
@@ -122,9 +125,9 @@ export class Gate {
     this.saveState();
     const left = approvals.reviewers.length;
     await this.room.post(
-      `Took back ${reviewer.label}'s approval for #${pr}. ${left === 1 ? '1 approval is' : `${left} approvals are`} left.`,
+      `Took back ${reviewer.label}'s approval for ${this.ref(pr)}. ${left === 1 ? '1 approval is' : `${left} approvals are`} left.`,
     );
-    await this.room.record(`#${pr} ${short(approvals.headSha)}: approval withdrawn by ${reviewer.label}`);
+    await this.room.record(`${this.ref(pr)} ${short(approvals.headSha)}: approval withdrawn by ${reviewer.label}`);
   }
 
   private async approve(pr: number, reviewer: Reviewer): Promise<void> {
@@ -136,8 +139,8 @@ export class Gate {
       const counted = this.state.approvals[pr]?.reviewers.includes(reviewer.key) ?? false;
       await this.room.post(
         counted
-          ? `${reviewer.label}'s approval for #${pr} is recorded, but something failed after that: ${describe(error)}`
-          : `I couldn't check #${pr} on GitHub, so nothing was counted: ${describe(error)}`,
+          ? `${reviewer.label}'s approval for ${this.ref(pr)} is recorded, but something failed after that: ${describe(error)}`
+          : `I couldn't check ${this.ref(pr)} on GitHub, so nothing was counted: ${describe(error)}`,
       );
     }
   }
@@ -145,11 +148,11 @@ export class Gate {
   private async evaluate(pr: number, reviewer: Reviewer): Promise<void> {
     const pull = await this.github.getPull(pr);
     if (pull.merged) {
-      await this.room.post(`#${pr} is already merged.`);
+      await this.room.post(`${this.ref(pr)} is already merged.`);
       return;
     }
     if (pull.state !== 'open') {
-      await this.room.post(`#${pr} is closed, so there's nothing to approve.`);
+      await this.room.post(`${this.ref(pr)} is closed, so there's nothing to approve.`);
       return;
     }
     if (pull.baseRef !== this.baseBranch) {
@@ -159,16 +162,16 @@ export class Gate {
 
     const verdict = this.verdicts.get(pr);
     if (!verdict) {
-      await this.room.post(`No audit verdict yet for #${pr}. Waiting for the auditor; this approval wasn't counted.`);
+      await this.room.post(`No audit verdict yet for ${this.ref(pr)}. Waiting for the auditor; this approval wasn't counted.`);
       return;
     }
     if (verdict.kind === 'malformed') {
       if (verdict.headSha === null || verdict.headSha === pull.headSha) {
         await this.room.post(
-          `The auditor's latest verdict for #${pr} can't be read (${verdict.reason}). ` +
-            `Treating #${pr} as CRITICAL: nothing merges until a valid verdict for ${short(pull.headSha)} is posted.`,
+          `The auditor's latest verdict for ${this.ref(pr)} can't be read (${verdict.reason}). ` +
+            `Treating ${this.ref(pr)} as CRITICAL: nothing merges until a valid verdict for ${short(pull.headSha)} is posted.`,
         );
-        await this.room.record(`#${pr} ${short(pull.headSha)}: unreadable verdict, treated as CRITICAL`);
+        await this.room.record(`${this.ref(pr)} ${short(pull.headSha)}: unreadable verdict, treated as CRITICAL`);
         return;
       }
       await this.postStale(pr);
@@ -185,7 +188,7 @@ export class Gate {
     const required = requiredApprovals(risk);
     if (!Number.isFinite(required)) {
       await this.room.post(
-        `#${pr} is rated CRITICAL at ${short(pull.headSha)}. DualDrive won't merge it; ` +
+        `${this.ref(pr)} is rated CRITICAL at ${short(pull.headSha)}. DualDrive won't merge it; ` +
           `push a fix and ask the auditor for a new verdict.`,
       );
       return;
@@ -198,7 +201,7 @@ export class Gate {
 
     let approvals: Approvals | undefined = this.state.approvals[pr];
     if (approvals && approvals.headSha !== pull.headSha) {
-      await this.room.post(`#${pr} has new commits since its earlier approvals, so the count starts again.`);
+      await this.room.post(`${this.ref(pr)} has new commits since its earlier approvals, so the count starts again.`);
       approvals = undefined;
     }
     approvals ??= { headSha: pull.headSha, reviewers: [], labels: {} };
@@ -206,16 +209,16 @@ export class Gate {
 
     if (approvals.reviewers.includes(reviewer.key)) {
       await this.room.post(
-        `Already counted ${reviewer.label}'s approval for #${pr} (${approvals.reviewers.length} of ${required}).`,
+        `Already counted ${reviewer.label}'s approval for ${this.ref(pr)} (${approvals.reviewers.length} of ${required}).`,
       );
     } else {
       approvals.reviewers.push(reviewer.key);
       approvals.labels = { ...approvals.labels, [reviewer.key]: reviewer.label };
       this.saveState();
       await this.room.post(
-        `Approval from ${reviewer.label} recorded for #${pr} (${approvals.reviewers.length} of ${required}, ${ratedAs}).`,
+        `Approval from ${reviewer.label} recorded for ${this.ref(pr)} (${approvals.reviewers.length} of ${required}, ${ratedAs}).`,
       );
-      await this.room.record(`#${pr} ${short(pull.headSha)}: approved by ${reviewer.label} (${ratedAs})`);
+      await this.room.record(`${this.ref(pr)} ${short(pull.headSha)}: approved by ${reviewer.label} (${ratedAs})`);
     }
 
     if (approvals.reviewers.length >= required) {
@@ -225,14 +228,14 @@ export class Gate {
 
   private async postStale(pr: number): Promise<void> {
     await this.room.post(
-      `The audit for #${pr} is stale: the pull request has moved since the auditor's verdict. ` +
+      `The audit for ${this.ref(pr)} is stale: the pull request has moved since the auditor's verdict. ` +
         `Waiting for a fresh audit before this approval counts.`,
     );
   }
 
   private async postWrongBase(pr: number, baseRef: string, outcome: string): Promise<void> {
-    await this.room.post(`#${pr} targets ${baseRef}, and DualDrive only merges into ${this.baseBranch}, so ${outcome}.`);
-    await this.room.record(`#${pr}: targets ${baseRef}, not ${this.baseBranch}; ${outcome}`);
+    await this.room.post(`${this.ref(pr)} targets ${baseRef}, and DualDrive only merges into ${this.baseBranch}, so ${outcome}.`);
+    await this.room.record(`${this.ref(pr)}: targets ${baseRef}, not ${this.baseBranch}; ${outcome}`);
   }
 
   // Runs only once the approvals are saved, so every failure here leaves them
@@ -258,15 +261,15 @@ export class Gate {
     } catch (error) {
       const count = this.state.approvals[pr]?.reviewers.length ?? 0;
       await this.room.post(
-        `The approvals for #${pr} stand (${count} of ${required}), but checking it on GitHub before merging failed: ` +
+        `The approvals for ${this.ref(pr)} stand (${count} of ${required}), but checking it on GitHub before merging failed: ` +
           `${describe(error)}. Approve again to retry.`,
       );
       return;
     }
 
     if (ci === 'failed') {
-      await this.room.post(`CI failed on ${short(approvedSha)}, so #${pr} isn't being merged.`);
-      await this.room.record(`#${pr} ${short(approvedSha)}: not merged, CI failed`);
+      await this.room.post(`CI failed on ${short(approvedSha)}, so ${this.ref(pr)} isn't being merged.`);
+      await this.room.record(`${this.ref(pr)} ${short(approvedSha)}: not merged, CI failed`);
       return;
     }
     if (ci === 'pending') {
@@ -282,7 +285,7 @@ export class Gate {
     const approvals = this.state.approvals[pr];
     const count = approvals?.headSha === approvedSha ? approvals.reviewers.length : 0;
     if (!approvals || count < required) {
-      await this.room.post(`An approval for #${pr} was taken back while CI ran (${count} of ${required}), so it isn't being merged.`);
+      await this.room.post(`An approval for ${this.ref(pr)} was taken back while CI ran (${count} of ${required}), so it isn't being merged.`);
       return;
     }
 
@@ -290,11 +293,11 @@ export class Gate {
       const result = await this.github.merge(pr, approvedSha, mergeMessage(current, approvals, ratedAs));
       delete this.state.approvals[pr];
       this.saveState();
-      await this.room.post(`Merged #${pr} as ${short(result.sha)}: ${current.url}`);
-      await this.room.record(`#${pr} ${short(approvedSha)}: merged as ${result.sha}`);
+      await this.room.post(`Merged ${this.ref(pr)} as ${short(result.sha)}: ${current.url}`);
+      await this.room.record(`${this.ref(pr)} ${short(approvedSha)}: merged as ${result.sha}`);
     } catch (error) {
-      await this.room.post(`GitHub refused to merge #${pr}: ${describe(error)}`);
-      await this.room.record(`#${pr} ${short(approvedSha)}: merge refused by GitHub`);
+      await this.room.post(`GitHub refused to merge ${this.ref(pr)}: ${describe(error)}`);
+      await this.room.record(`${this.ref(pr)} ${short(approvedSha)}: merge refused by GitHub`);
     }
   }
 
@@ -304,7 +307,7 @@ export class Gate {
     if (current.headSha !== approvedSha) {
       delete this.state.approvals[pr];
       this.saveState();
-      await this.room.post(`#${pr} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
+      await this.room.post(`${this.ref(pr)} moved to ${short(current.headSha)} just before merging, so its approvals were reset.`);
       return false;
     }
     if (current.baseRef !== this.baseBranch) {
@@ -318,7 +321,7 @@ export class Gate {
     const checks = this.options.requiredChecks ?? [];
     let ci = ciState(await this.github.listCheckRuns(sha), checks);
     if (ci === 'pending') {
-      await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging #${pr}.`);
+      await this.room.post(`Approvals recorded (${count} of ${required}). Waiting for CI to finish before merging ${this.ref(pr)}.`);
       const polls = Math.ceil(this.options.ciTimeoutMs / this.options.ciPollMs);
       for (let i = 0; i < polls && ci === 'pending'; i++) {
         await this.sleep(this.options.ciPollMs);
@@ -326,6 +329,10 @@ export class Gate {
       }
     }
     return ci;
+  }
+
+  private ref(pr: number): string {
+    return this.options.repoLabel ? `${this.options.repoLabel}#${pr}` : `#${pr}`;
   }
 
   private saveState(): void {

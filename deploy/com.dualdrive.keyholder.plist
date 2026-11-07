@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  @keyholder as a launchd daemon on macOS, under the separate user from
+  setup step 4 (README). Edit the three paths below if yours differ: the
+  keyholder user's clone, and node (`which node` as that user).
+
+    sudo cp deploy/com.dualdrive.keyholder.plist /Library/LaunchDaemons/
+    sudo chown root:wheel /Library/LaunchDaemons/com.dualdrive.keyholder.plist
+    sudo launchctl bootstrap system /Library/LaunchDaemons/com.dualdrive.keyholder.plist
+    tail -f /Users/dualdrive-keyholder/Library/Logs/dualdrive-keyholder.log
+
+  keyholder reads ../.env in its own clone, as with npm start.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dualdrive.keyholder</string>
+  <key>UserName</key>
+  <string>dualdrive-keyholder</string>
+  <key>WorkingDirectory</key>
+  <string>/Users/dualdrive-keyholder/dualdrive/keyholder</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>--import</string>
+    <string>tsx</string>
+    <string>src/main.ts</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <!-- Restart it whenever it exits, at most every 10 seconds. -->
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/dualdrive-keyholder/Library/Logs/dualdrive-keyholder.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/dualdrive-keyholder/Library/Logs/dualdrive-keyholder.log</string>
+</dict>
+</plist>

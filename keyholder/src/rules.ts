@@ -10,13 +10,25 @@ export interface Verdict {
   risk: Risk;
   headSha: string;
   cwe: string[];
+  // "owner/repo", for a pull request outside GITHUB_REPOSITORY. Absent means
+  // GITHUB_REPOSITORY.
+  repo?: string;
 }
 
 export type ParsedVerdict =
   | { kind: 'valid'; verdict: Verdict }
-  // The tag is there but unusable. `pr` and `headSha` are whatever could be
-  // recovered from the raw text, so the gate can still tie it to a commit.
-  | { kind: 'malformed'; pr: number; headSha: string | null; reason: string };
+  // The tag is there but unusable. `pr`, `headSha` and `repo` are whatever
+  // could be recovered from the raw text, so the gate can still tie it to a
+  // commit.
+  | { kind: 'malformed'; pr: number; headSha: string | null; reason: string; repo?: string };
+
+// GitHub's own character sets: an owner is letters, digits and hyphens; a
+// repo name adds dots and underscores.
+const REPO_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9._-]{1,100}$/;
+
+export function isRepoName(text: string): boolean {
+  return REPO_NAME.test(text);
+}
 
 const VERDICT_TAG = /<!--\s*DUALDRIVE_VERDICT:\s*([\s\S]*?)\s*-->/;
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -34,7 +46,10 @@ export function parseVerdictTag(body: string): ParsedVerdict | null {
   const pr = Number(prMatch[1]);
   const shaMatch = raw.match(/"head_sha"\s*:\s*"([0-9a-fA-F]+)"/);
   const headSha = shaMatch ? shaMatch[1].toLowerCase() : null;
-  const malformed = (reason: string): ParsedVerdict => ({ kind: 'malformed', pr, headSha, reason });
+  const repoMatch = raw.match(/"repo"\s*:\s*"([^"]*)"/);
+  const rawRepo = repoMatch?.[1];
+  const malformed = (reason: string): ParsedVerdict =>
+    rawRepo === undefined ? { kind: 'malformed', pr, headSha, reason } : { kind: 'malformed', pr, headSha, reason, repo: rawRepo };
 
   // The auditor's own tag opens its message. One further in is something it
   // quoted, such as a tag @builder planted in a pull request description, so
@@ -67,15 +82,19 @@ export function parseVerdictTag(body: string): ParsedVerdict | null {
   if (!Array.isArray(cwe) || !cwe.every((item) => typeof item === 'string')) {
     return malformed('"cwe" is not a list of strings');
   }
-  return {
-    kind: 'valid',
-    verdict: {
-      pr: fields.pr as number,
-      risk: fields.risk as Risk,
-      headSha: fields.head_sha.toLowerCase(),
-      cwe: cwe as string[],
-    },
+  if (fields.repo !== undefined && (typeof fields.repo !== 'string' || !isRepoName(fields.repo))) {
+    return malformed('"repo" is not an owner/repo name');
+  }
+  const verdict: Verdict = {
+    pr: fields.pr as number,
+    risk: fields.risk as Risk,
+    headSha: fields.head_sha.toLowerCase(),
+    cwe: cwe as string[],
   };
+  if (typeof fields.repo === 'string') {
+    verdict.repo = fields.repo;
+  }
+  return { kind: 'valid', verdict };
 }
 
 function escapeRegExp(text: string): string {
@@ -89,24 +108,55 @@ export function opensWithMention(body: string, handle: string): boolean {
   return new RegExp(`^\\s*@${escapeRegExp(handle)}(?![\\w-])`, 'i').test(body);
 }
 
-// "@keyholder approve #12", "@keyholder: approve 12", "@keyholder, approve 12", "@keyholder approve PR 12 - lgtm".
+// What a command points at: a pull request number, and the repo when the
+// command named one ("owner/repo#12"). No repo means GITHUB_REPOSITORY.
+export interface CommandTarget {
+  repo: string | null;
+  pr: number;
+}
+
+// "@keyholder approve #12", "@keyholder: approve 12", "@keyholder, approve 12", "@keyholder approve PR 12 - lgtm",
+// and "@keyholder approve owner/repo#12" for another repo.
 // The command has to open the message. Anywhere else it is being talked
 // about or quoted ("don't let @keyholder approve #1 yet", "> @keyholder
 // approve #1"), and counting that would approve on the reviewer's behalf.
-export function parseApproval(body: string, handle: string): number | null {
+export function parseApprovalTarget(body: string, handle: string): CommandTarget | null {
   return parseCommand(body, handle, 'approve');
 }
 
-// "@keyholder revoke #12": a reviewer takes back their own approval. Same
-// shape and the same rule about opening the message.
-export function parseRevoke(body: string, handle: string): number | null {
+// "@keyholder revoke #12" or "@keyholder revoke owner/repo#12": a reviewer
+// takes back their own approval. Same shape and the same rule about opening
+// the message.
+export function parseRevokeTarget(body: string, handle: string): CommandTarget | null {
   return parseCommand(body, handle, 'revoke');
 }
 
-function parseCommand(body: string, handle: string, verb: string): number | null {
-  const pattern = new RegExp(`^\\s*@${escapeRegExp(handle)}(?:\\s*[:,]\\s*|\\s+)${verb}\\s+(?:pr\\s*)?#?(\\d+)(?!\\w)`, 'i');
+// The number alone, for a command that names no repo. Kept for callers that
+// only know GITHUB_REPOSITORY.
+export function parseApproval(body: string, handle: string): number | null {
+  const target = parseApprovalTarget(body, handle);
+  return target && target.repo === null ? target.pr : null;
+}
+
+export function parseRevoke(body: string, handle: string): number | null {
+  const target = parseRevokeTarget(body, handle);
+  return target && target.repo === null ? target.pr : null;
+}
+
+function parseCommand(body: string, handle: string, verb: string): CommandTarget | null {
+  const pattern = new RegExp(
+    `^\\s*@${escapeRegExp(handle)}(?:\\s*[:,]\\s*|\\s+)${verb}\\s+(?:pr\\s*)?(?:([A-Za-z0-9][A-Za-z0-9-]*\\/[A-Za-z0-9._-]+)#|#?)(\\d+)(?!\\w)`,
+    'i',
+  );
   const found = body.match(pattern);
-  return found ? Number(found[1]) : null;
+  if (!found) {
+    return null;
+  }
+  const repo = found[1] ?? null;
+  if (repo !== null && !isRepoName(repo)) {
+    return null;
+  }
+  return { repo, pr: Number(found[2]) };
 }
 
 // demo-service's own sensitive paths. SENSITIVE_PATHS replaces this list for
@@ -116,10 +166,12 @@ function parseCommand(body: string, handle: string, verb: string): number | null
 export const DEFAULT_SENSITIVE_PATHS: readonly string[] = ['src/auth.js', 'src/auth/', 'package.json', 'package-lock.json'];
 
 // Paths that raise a pull request to at least HIGH whatever the auditor says.
-// CI config and env files count in every repo, so no setting can drop them.
+// CI config and env files count in every repo, so no setting can drop them,
+// and so does .dualdrive.json, which decides how audit/run.sh tests the repo.
 export function isSensitivePath(path: string, projectPaths: readonly string[] = DEFAULT_SENSITIVE_PATHS): boolean {
   return (
     path.startsWith('.github/') ||
+    path === '.dualdrive.json' ||
     // .env, .env.local and the like, and direnv's .envrc; not .environment.
     /(^|\/)\.env(rc)?(\.|\/|$)/i.test(path) ||
     projectPaths.some((entry) => (entry.endsWith('/') ? path.startsWith(entry) : path === entry))
@@ -193,4 +245,22 @@ export function parseRequiredChecks(value: string | undefined): readonly string[
     .split(',')
     .map((name) => name.trim())
     .filter(Boolean);
+}
+
+// Reads CI_TIMEOUT_MS: how long a merge waits for check runs to finish.
+// Unset or empty means two minutes, which covers a cold runner booting its
+// container. Anything that isn't a whole number of milliseconds of at least
+// one second is refused rather than guessed at.
+export const DEFAULT_CI_TIMEOUT_MS = 120_000;
+
+export function parseCiTimeoutMs(value: string | undefined): number {
+  const text = (value ?? '').trim();
+  if (text === '') {
+    return DEFAULT_CI_TIMEOUT_MS;
+  }
+  const ms = /^\d+$/.test(text) ? Number(text) : NaN;
+  if (!Number.isSafeInteger(ms) || ms < 1000) {
+    throw new Error(`CI_TIMEOUT_MS must be a whole number of milliseconds, at least 1000; got "${text}"`);
+  }
+  return ms;
 }

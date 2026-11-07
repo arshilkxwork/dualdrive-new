@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# Deterministic checks for one pull request on demo-service: the tests in a
-# container with no network, a secret scan, a dependency audit, and the list
-# of changed files. Prints one JSON line for @auditor to read.
+# Deterministic checks for one pull request: the tests in a container with
+# no network, a secret scan, a dependency audit, and the list of changed
+# files. Prints one JSON line for @auditor to read.
 #
-# Usage: audit/run.sh <pr-number>
+# The tests run the way demo-service needs (Node 22, `node --test`) unless the
+# upstream's default branch has a .dualdrive.json naming another image and
+# command; audit/config.js reads it.
+#
+# Usage: audit/run.sh <pr-number>                 a pull request on GITHUB_REPOSITORY
+#        audit/run.sh <owner/repo#pr-number>      one on another repo @keyholder governs
 set -euo pipefail
 
 die() { echo "audit/run.sh: $*" >&2; exit 2; }
@@ -24,12 +29,28 @@ for candidate in "$SCRIPT_DIR/../.env" ".env"; do
   fi
 done
 
-PR_NUM="${1:-}"
-[[ "$PR_NUM" =~ ^[0-9]+$ ]] || die "usage: audit/run.sh <pr-number>"
+TARGET="${1:-}"
+TARGET_REPO=""
+PR_NUM="$TARGET"
+# In a variable: bash 3.2 reads a quoted or inline pattern differently.
+repo_target='^([A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)#([0-9]+)$'
+if [[ "$TARGET" =~ $repo_target ]]; then
+  TARGET_REPO="${BASH_REMATCH[1]}"
+  PR_NUM="${BASH_REMATCH[2]}"
+fi
+[[ "$PR_NUM" =~ ^[0-9]+$ ]] || die "usage: audit/run.sh <pr-number>, or <owner/repo#pr-number> for another repo"
 # No apostrophes in these messages: inside "${VAR:?...}" a ' starts a quote,
 # so two of them vanish from the output and one breaks the script.
 : "${UPSTREAM_REPO_URL:?Set UPSTREAM_REPO_URL in .env — do not guess it from the local checkout, this script does not run from inside demo-service}"
 : "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY=owner/repo in .env}"
+
+# Another repo is cloned from GitHub by its name. Naming GITHUB_REPOSITORY
+# itself keeps UPSTREAM_REPO_URL.
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+if [ -n "$TARGET_REPO" ] && [ "$(lower "$TARGET_REPO")" != "$(lower "$GITHUB_REPOSITORY")" ]; then
+  UPSTREAM_REPO_URL="https://github.com/$TARGET_REPO.git"
+  GITHUB_REPOSITORY="$TARGET_REPO"
+fi
 
 # An agent may run this without your shell's startup files, and so without the
 # PATH entries Docker Desktop and nvm add there. Look in their usual places
@@ -67,22 +88,49 @@ mkdir -p "$OUT"
 # Builder's branch lives on its fork. refs/pull/<n>/head exists on the
 # upstream repo for every pull request, whichever fork it came from.
 git clone --quiet --depth 1 "$UPSTREAM_REPO_URL" "$CLONE"
+
+# How to run the tests, from .dualdrive.json on the default branch. It is read
+# before the pull request is checked out, so a pull request can't choose its
+# own test command. git show reads the committed blob, so a symlink there
+# can't point this at some other file.
+CONFIG_FILE="$TMPDIR/dualdrive.json"
+if git -C "$CLONE" cat-file -e HEAD:.dualdrive.json 2>/dev/null; then
+  git -C "$CLONE" show HEAD:.dualdrive.json >"$CONFIG_FILE"
+fi
+node "$SCRIPT_DIR/config.js" "$CONFIG_FILE" >"$TMPDIR/test-config"
+{
+  IFS= read -r TEST_IMAGE
+  IFS= read -r TEST_COMMAND
+  IFS= read -r TEST_MODE
+} <"$TMPDIR/test-config"
+
 git -C "$CLONE" fetch --quiet --depth 1 origin "pull/$PR_NUM/head:pr-$PR_NUM"
 git -C "$CLONE" checkout --quiet "pr-$PR_NUM"
 HEAD_SHA=$(git -C "$CLONE" rev-parse HEAD)
 
-# Tests. package.json is mounted with src/ and test/ because Node reads its
-# "type": "module" to decide that .js files are ES modules.
-# Capping memory, CPU and pids prevents untrusted PR code from exhausting the host.
+# Tests, as untrusted code: no network, capped memory, CPU and processes, no
+# Linux capabilities, no setuid escalation, and a read-only filesystem apart
+# from /tmp, which is also HOME for tools that keep a cache there.
+CONTAINER=(--rm --network none
+  --memory=512m --cpus=1.0 --pids-limit=64
+  --cap-drop=ALL --security-opt=no-new-privileges
+  --read-only "--tmpfs=/tmp:rw,exec,nosuid,nodev,size=256m" -e HOME=/tmp)
 set +e
-docker run --rm --network none \
-  --memory=512m \
-  --cpus=1.0 \
-  --pids-limit=64 \
-  -v "$CLONE/package.json":/w/package.json:ro \
-  -v "$CLONE/src":/w/src:ro \
-  -v "$CLONE/test":/w/test:ro \
-  -w /w node:22 node --test >"$OUT/tests.log" 2>&1
+if [ "$TEST_MODE" = default ]; then
+  # demo-service. package.json is mounted with src/ and test/ because Node
+  # reads its "type": "module" to decide that .js files are ES modules.
+  docker run "${CONTAINER[@]}" \
+    -v "$CLONE/package.json":/w/package.json:ro \
+    -v "$CLONE/src":/w/src:ro \
+    -v "$CLONE/test":/w/test:ro \
+    -w /w "$TEST_IMAGE" node --test >"$OUT/tests.log" 2>&1
+else
+  # Any other repo: the whole checkout, read-only, and the configured
+  # command through the image's /bin/sh.
+  docker run "${CONTAINER[@]}" \
+    -v "$CLONE":/w:ro -w /w \
+    --entrypoint /bin/sh "$TEST_IMAGE" -c "$TEST_COMMAND" >"$OUT/tests.log" 2>&1
+fi
 TEST_EXIT=$?
 set -e
 
@@ -117,7 +165,8 @@ else
 fi
 
 # Changed files, from the same API call @keyholder makes for its floor check,
-# every page of it. A local git diff can't work here: both refs were fetched
+# every page of it. GITHUB_API_URL points it at GitHub Enterprise, or at the
+# stand-in scripts/audit-e2e.sh runs. A local git diff can't work here: both refs were fetched
 # at depth 1 and share no reachable merge base. demo-service is public, so a
 # token is optional; AUDIT_GITHUB_TOKEN, a read-only one, only raises the
 # rate limit.
@@ -127,11 +176,13 @@ if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
 else
   echo "audit/run.sh: AUDIT_GITHUB_TOKEN is unset; using unauthenticated GitHub API (rate limit: 60 req/hr)" >&2
 fi
+GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
+GITHUB_API="${GITHUB_API%/}"
 page=1
 while :; do
   curl -fsS ${AUTH[@]+"${AUTH[@]}"} \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
+    "$GITHUB_API/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
     >"$OUT/files-$page.json"
   count=$(node -e 'const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(data)) { console.error("GitHub files API response is not an array"); process.exit(1); } console.log(data.length);' "$OUT/files-$page.json")
   [[ "$count" =~ ^[0-9]+$ ]] || die "GitHub files API returned unexpected response on page $page"
@@ -141,4 +192,4 @@ done
 node -e 'console.log(JSON.stringify(process.argv.slice(1).flatMap((f) => JSON.parse(require("node:fs").readFileSync(f, "utf8")))))' \
   "$OUT"/files-*.json >"$OUT/files.json"
 
-node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT"
+node "$SCRIPT_DIR/report.js" "$OUT" "$PR_NUM" "$HEAD_SHA" "$TEST_EXIT" "$GITHUB_REPOSITORY"

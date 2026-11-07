@@ -83,9 +83,23 @@ It doesn't protect against:
 |---|---|
 | `demo-service/` | The project the agents work on. Push it to its own repo (setup step 2). Its `src/auth.js` compares passwords in plain text on purpose. |
 | `audit/run.sh` | The checks @auditor runs on a pull request. Prints one JSON line. |
-| `keyholder/` | The merge agent. `npm run register` once, then `npm start`. |
+| `keyholder/` | The merge agent. `npm run register` once, then `npm start`. Its `Dockerfile` builds a production image. |
+| `deploy/` | Service definitions that restart @keyholder when it exits: systemd (`dualdrive.service`) and launchd (`com.dualdrive.keyholder.plist`). |
+| `mock/`, `docker-compose.yml` | The sandbox: the real @keyholder against a mock Switch room and a mock GitHub. |
 | `templates/dualdrive.room.yaml` | Switch template that creates @builder, @auditor and the room. |
 | `.env.example` | The settings `audit/run.sh` and `keyholder/` read. Each gets its own `.env` in its own copy of the repo (setup step 4). |
+
+## Try it in a minute
+
+With only Docker, and no accounts or tokens:
+
+```bash
+docker compose up            # or: bash scripts/demo-sandbox.sh, which exits with the demo's result
+```
+
+This runs the real @keyholder against `mock/switch-server.mjs`, which stands in for Switch's agent bridge and for GitHub, and `mock/demo.mjs`, which plays the room. A prompt-injected @builder plants a LOW verdict and tells @keyholder to merge. The mock's addressing policy refuses the mention, the way Switch does, and @keyholder ignores the verdict because it didn't come from the auditor. Then alice approves (1 of 2, since `src/auth.js` raises the pull request to HIGH), alice again (still 1), and bob, and @keyholder merges the approved commit.
+
+The mocks only play Switch's and GitHub's parts. The Switch refusal you see there comes from the mock; in the real setup it comes from Switch's server.
 
 ## Setup
 
@@ -122,6 +136,8 @@ Do this in order. Several steps depend on the one before.
    ```
    It logs every approval's sender name and participant id. Once you've seen them, switch `REVIEWER_SENDERS` and `AUDITOR_SENDERS` from names to ids (`@switch-…:…`); ids are exact, display names aren't.
 
+   To keep it running, use `deploy/com.dualdrive.keyholder.plist` (launchd, as the keyholder user) or `deploy/dualdrive.service` (systemd); each file says how to install it. If the Switch stream drops, @keyholder reopens it after 1s, then 2s, 4s and so on up to 30s, and starts again from 1s once it is back in the room.
+
 ## Why Switch is load-bearing
 
 - **The refusal.** @keyholder's addressing policy is enforced by Switch's server (`core/switch_core/delivery/recipient.py`). A mention from an agent is demoted to ordinary chatter, and Switch posts the refusal as an auto-reply on @keyholder's behalf. Nothing in this repo produces that message.
@@ -148,7 +164,7 @@ npm test           # demo-service, audit and keyholder
 npm run typecheck
 ```
 
-The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, revocations (including one sent during the CI wait), retargeted pull requests, CI that hasn't registered yet, required checks, failed CI, malformed verdicts and the merge commit's trailers. `audit/run.sh` and the live Switch connection need the real setup above to run.
+The keyholder tests run the whole approval flow against a fake GitHub and room: waiting for a verdict, stale verdicts, the floor (default and configured paths), duplicate approvals, resets on new commits, revocations (including one sent during the CI wait), retargeted pull requests, CI that hasn't registered yet, required checks, failed CI, malformed verdicts and the merge commit's trailers. `audit/run.sh` and the live Switch connection need the real setup above to run; `scripts/audit-e2e.sh` and `scripts/demo-sandbox.sh` cover each with Docker.
 
 ## CI
 
@@ -160,7 +176,7 @@ Every pull request and every push to `main` runs these. `security` also runs wee
 | `typecheck` | `tsc --noEmit` over keyholder. |
 | `test (Node 24)` | The same tests on the next Node LTS, since `engines` allows any Node from 22 up. |
 | `test (macOS)` | The tests on macOS, where the setup runs, plus `scripts/run-sh-guards.sh`: the ways `audit/run.sh` refuses to start, under macOS's `/bin/bash` 3.2. |
-| `audit/run.sh end to end` | `scripts/audit-e2e.sh` runs `audit/run.sh` with Docker against a local copy of demo-service: a passing test, a failing one, one that tries the network, and a pull request whose `.npmrc` tries to send an environment variable to its own registry. |
+| `audit/run.sh end to end` | `scripts/audit-e2e.sh` runs `audit/run.sh` with Docker against a local copy of demo-service: a passing test, a failing one, one that tries the network, a pull request whose `.npmrc` tries to send an environment variable to its own registry, one that tries to choose its own test command, and an upstream with a `.dualdrive.json`. A local stand-in answers GitHub's files API, so it needs no pull requests on GitHub. |
 | `shellcheck` | `audit/run.sh` and `scripts/*.sh`. |
 | `actionlint` | This repo's workflows and demo-service's. |
 | `yaml` | The Switch room template parses. |
@@ -174,15 +190,15 @@ Most of them run locally too:
 ```bash
 node scripts/check-env-docs.mjs
 bash scripts/run-sh-guards.sh /bin/bash
-GITHUB_REPOSITORY=arshilkxwork/dualdrive bash scripts/audit-e2e.sh   # needs Docker running
+bash scripts/audit-e2e.sh   # needs Docker running
 ```
 
 ## Known limitations
 
 - **Approvals sent while @keyholder is down are not replayed.** On start it reads room history with `read_context` to catch up on verdicts, but it acts on approvals only as they arrive, so a stale "approve" can't trigger a merge later. Approvals it already counted are kept in `keyholder/.state.json`. Re-send any you made while it was stopped. Revocations work the same way: one sent while it was down didn't happen, so send it again.
-- **CI waits up to 30 seconds.** After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
-- **One upstream repo per @keyholder.** `GITHUB_REPOSITORY` is fixed.
+- **CI waits up to two minutes** (`CI_TIMEOUT_MS`). After that @keyholder keeps the approvals and asks for a re-approval once CI is green, rather than holding a request open.
+- **Every repo shares one set of rules.** `EXTRA_REPOSITORIES` lets one @keyholder merge into more repos (`@keyholder approve owner/repo#4`), but `SENSITIVE_PATHS`, `BASE_BRANCH` and `REQUIRED_CHECKS` apply to all of them, and `GITHUB_TOKEN` must cover each one.
 - **The project's sensitive paths are a plain list.** `SENSITIVE_PATHS` takes exact files and folders (`internal/auth/,go.mod`). It doesn't understand glob patterns, and its default fits demo-service.
-- **`audit/run.sh` is written for demo-service.** It mounts `src/`, `test/` and `package.json` and runs `node --test`, so a repo in another language needs its own test step there.
+- **`audit/run.sh` defaults to demo-service.** It mounts `src/`, `test/` and `package.json` and runs `node --test`. A repo in another language commits a `.dualdrive.json` on its default branch, such as `{"image": "python:3.12-slim", "test_command": "pytest -q"}`. It is read from the default branch, never from the pull request, and changing it needs two approvals. The image needs `/bin/sh`, and the tests get no network, so dependencies have to be in the image or the repo.
 - **`mergeable_state` isn't used.** GitHub documents it as best-effort, so the merge waits on check runs instead.
 - **@auditor is still a model.** It can be fooled. The design limits what that costs (the floor, the commit pinning, the human approvals) rather than assuming it can't happen.

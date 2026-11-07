@@ -1,15 +1,20 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { Backoff, describeNetworkError } from './backoff.ts';
 import { loadConfig } from './config.ts';
 import { Gate, type GateState } from './gate.ts';
 import { createGitHub } from './github.ts';
 import { readMessage, type MessagePayload } from './inbox.ts';
+import { RepoRouter, repoKey, unknownRepoReply } from './repos.ts';
 import { Room } from './room.ts';
 import { SwitchClient, type Frame } from './switch.ts';
 
 interface Persisted {
   connectionId?: string;
+  // GITHUB_REPOSITORY's approvals, where they have always been.
   approvals?: GateState['approvals'];
+  // EXTRA_REPOSITORIES' approvals, by lowercase "owner/repo".
+  repos?: Record<string, GateState['approvals']>;
 }
 
 interface ContextEntry {
@@ -40,23 +45,34 @@ const persisted = readPersisted();
 // is how a dropped stream resumes instead of starting a new connection.
 const connectionId = persisted.connectionId ?? randomUUID();
 const state: GateState = { approvals: persisted.approvals ?? {} };
+const extraStates = new Map<string, GateState>();
 const save = () => {
+  const repos = Object.fromEntries([...extraStates].map(([key, extra]) => [key, extra.approvals]));
   const tmp = `${config.stateFile}.${process.pid}.tmp`;
-  writeFileSync(tmp, `${JSON.stringify({ connectionId, approvals: state.approvals }, null, 2)}\n`);
+  writeFileSync(tmp, `${JSON.stringify({ connectionId, approvals: state.approvals, repos }, null, 2)}\n`);
   renameSync(tmp, config.stateFile);
 };
-save();
 
 const client = new SwitchClient(config.bridgeUrl, config.agentId, config.apiKey, connectionId);
 const room = new Room(client, config.roomId);
-const gate = new Gate(createGitHub(config.githubToken, config.owner, config.repo), room, state, {
-  sensitivePaths: config.sensitivePaths,
-  baseBranch: config.baseBranch,
-  requiredChecks: config.requiredChecks,
-  ciPollMs: 3000,
-  ciTimeoutMs: 30000,
-  onStateChange: save,
+const gates = new RepoRouter(config.repositories, (target, isDefault) => {
+  let gateState = state;
+  if (!isDefault) {
+    const key = repoKey(target.name);
+    gateState = { approvals: persisted.repos?.[key] ?? {} };
+    extraStates.set(key, gateState);
+  }
+  return new Gate(createGitHub(config.githubToken, target.owner, target.repo, config.githubApiUrl), room, gateState, {
+    sensitivePaths: config.sensitivePaths,
+    baseBranch: config.baseBranch,
+    requiredChecks: config.requiredChecks,
+    ciPollMs: 3000,
+    ciTimeoutMs: config.ciTimeoutMs,
+    onStateChange: save,
+    repoLabel: isDefault ? undefined : target.name,
+  });
 });
+save();
 
 const seen = new Set<string>();
 function firstTime(id: string | undefined): boolean {
@@ -81,19 +97,32 @@ function handleMessage(payload: MessagePayload, live: boolean): void {
   for (const action of readMessage(payload, live, config)) {
     switch (action.kind) {
       case 'verdict': {
-        gate.recordVerdict(action.verdict);
-        const pr = action.verdict.kind === 'valid' ? action.verdict.verdict.pr : action.verdict.pr;
-        console.log(`[keyholder] ${action.verdict.kind} verdict for #${pr} from ${from}`);
+        const parsed = action.verdict;
+        const pr = parsed.kind === 'valid' ? parsed.verdict.pr : parsed.pr;
+        const repo = parsed.kind === 'valid' ? parsed.verdict.repo : parsed.repo;
+        const gate = gates.route(repo);
+        if (!gate) {
+          // Nothing to record it against. The auditor isn't answered: its
+          // verdicts are read, never replied to.
+          console.warn(`[keyholder] ignored a verdict for ${repo}#${pr} from ${from}: not a governed repo`);
+          break;
+        }
+        gate.recordVerdict(parsed);
+        console.log(`[keyholder] ${parsed.kind} verdict for ${repo ?? ''}#${pr} from ${from}`);
         break;
       }
       case 'approve':
-        console.log(`[keyholder] approval for #${action.pr} from ${from}`);
-        void gate.handleApproval(action.pr, action.reviewer).catch(logError);
+      case 'revoke': {
+        const gate = gates.route(action.repo);
+        if (!gate) {
+          void room.post(unknownRepoReply(action.repo ?? '', gates.names())).catch(logError);
+          break;
+        }
+        console.log(`[keyholder] ${action.kind} for ${action.repo ?? ''}#${action.pr} from ${from}`);
+        const done = action.kind === 'approve' ? gate.handleApproval(action.pr, action.reviewer) : gate.handleRevoke(action.pr, action.reviewer);
+        void done.catch(logError);
         break;
-      case 'revoke':
-        console.log(`[keyholder] revocation for #${action.pr} from ${from}`);
-        void gate.handleRevoke(action.pr, action.reviewer).catch(logError);
-        break;
+      }
       case 'reply':
         console.log(`[keyholder] replying to ${from}`);
         void room.post(action.body).catch(logError);
@@ -119,7 +148,7 @@ async function catchUp(): Promise<void> {
 }
 
 function logError(error: unknown): void {
-  console.error(`[keyholder] ${error instanceof Error ? error.message : String(error)}`);
+  console.error(`[keyholder] ${describeNetworkError(error)}`);
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -127,6 +156,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function run(): Promise<never> {
   let lastEventId: string | null = null;
   let ledgerOpen = false;
+  const backoff = new Backoff();
   for (;;) {
     const controller = new AbortController();
     let beat: NodeJS.Timeout | undefined;
@@ -145,8 +175,9 @@ async function run(): Promise<never> {
       clearInterval(beat);
       controller.abort();
     }
-    console.log('[keyholder] stream closed, reopening');
-    await sleep(2000);
+    const wait = backoff.next();
+    console.log(`[keyholder] stream closed, reopening in ${wait / 1000}s`);
+    await sleep(wait);
 
     async function handleFrame(frame: Frame): Promise<void> {
       switch (frame.event) {
@@ -170,6 +201,9 @@ async function run(): Promise<never> {
             ledgerOpen = true;
           }
           await catchUp();
+          // Only now is the connection known to work. A stream that opens
+          // and fails straight away keeps backing off.
+          backoff.reset();
           console.log(`[keyholder] watching room ${config.roomId} as @${config.handle}`);
           break;
         }

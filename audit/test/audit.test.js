@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { scanDir, scanText, isEnvFile } from '../secrets.js';
 import { summarizeTests, summarizeNpmAudit, changedPaths } from '../report.js';
+import { DEFAULT_AUDIT_CONFIG, loadAuditConfig, parseAuditConfig } from '../config.js';
 
 test('scanText flags a hard-coded token and redacts it', () => {
   // Assembled at runtime so this repo doesn't trip its own scanner.
@@ -87,6 +88,71 @@ test('the scripts still run when called through a symlinked path', () => {
       encoding: 'utf8',
     });
     assert.deepEqual(JSON.parse(report).changedPaths, ['src/auth.js']);
+    assert.equal(JSON.parse(report).repo, undefined);
+
+    const withRepo = execFileSync(
+      process.execPath,
+      [join(linked, 'report.js'), out, '4', 'a'.repeat(40), '0', 'org/repo-b'],
+      { encoding: 'utf8' },
+    );
+    assert.equal(JSON.parse(withRepo).repo, 'org/repo-b');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('.dualdrive.json picks the image and test command', () => {
+  assert.deepEqual(parseAuditConfig('{"image": "python:3.12-slim", "test_command": "pytest -q"}'), {
+    image: 'python:3.12-slim',
+    testCommand: 'pytest -q',
+    mode: 'custom',
+  });
+  assert.equal(
+    parseAuditConfig('{"image": "ghcr.io/org/go@sha256:abc123", "test_command": "go test ./... && go vet ./..."}').image,
+    'ghcr.io/org/go@sha256:abc123',
+  );
+});
+
+test('.dualdrive.json is refused when it is wrong, never half-read', () => {
+  const refused = {
+    'not json': /not valid JSON/,
+    '[]': /JSON object/,
+    '{"test_command": "pytest"}': /"image"/,
+    '{"image": "--privileged", "test_command": "pytest"}': /"image"/,
+    '{"image": "python:3.12", "test_command": ""}': /"test_command"/,
+    '{"image": "python:3.12", "test_command": "pytest\\nrm -rf /"}': /one line/,
+    '{"image": "python:3.12", "test_command": "pytest", "sensitive_paths": ["src/"]}': /SENSITIVE_PATHS/,
+    '{"image": "python:3.12", "test_command": "pytest", "network": true}': /network/,
+  };
+  for (const [text, reason] of Object.entries(refused)) {
+    assert.throws(() => parseAuditConfig(text), reason, text);
+  }
+});
+
+test('no .dualdrive.json means the demo-service defaults', () => {
+  assert.deepEqual(loadAuditConfig(undefined), DEFAULT_AUDIT_CONFIG);
+  assert.deepEqual(loadAuditConfig(join(tmpdir(), 'dualdrive-no-such-config.json')), DEFAULT_AUDIT_CONFIG);
+  assert.deepEqual(DEFAULT_AUDIT_CONFIG, { image: 'node:22', testCommand: 'node --test', mode: 'default' });
+});
+
+test('config.js prints one setting per line for run.sh, and exits 2 on a bad file', () => {
+  const auditDir = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+  const root = mkdtempSync(join(tmpdir(), 'dualdrive-config-'));
+  try {
+    const good = join(root, 'good.json');
+    writeFileSync(good, '{"image": "rust:1.82", "test_command": "cargo test --offline"}');
+    const out = execFileSync(process.execPath, [join(auditDir, 'config.js'), good], { encoding: 'utf8' });
+    assert.equal(out, 'rust:1.82\ncargo test --offline\ncustom\n');
+    assert.equal(
+      execFileSync(process.execPath, [join(auditDir, 'config.js'), join(root, 'missing.json')], { encoding: 'utf8' }),
+      'node:22\nnode --test\ndefault\n',
+    );
+    const bad = join(root, 'bad.json');
+    writeFileSync(bad, '{"image": "-it"}');
+    assert.throws(
+      () => execFileSync(process.execPath, [join(auditDir, 'config.js'), bad], { stdio: 'pipe' }),
+      (error) => error.status === 2 && /"image"/.test(String(error.stderr)),
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

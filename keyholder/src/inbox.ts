@@ -3,7 +3,7 @@
 
 import { senderMatches } from './config.ts';
 import type { Reviewer } from './gate.ts';
-import { opensWithMention, parseApproval, parseRevoke, parseVerdictTag, type ParsedVerdict } from './rules.ts';
+import { opensWithMention, parseApprovalTarget, parseRevokeTarget, parseVerdictTag, type ParsedVerdict } from './rules.ts';
 
 export interface MessagePayload {
   message_id?: string;
@@ -19,16 +19,19 @@ export interface InboxConfig {
   reviewers: string[];
 }
 
+// `repo` is there only when the command named one ("owner/repo#4"). Without
+// it the command is for GITHUB_REPOSITORY.
 export type Action =
   | { kind: 'verdict'; verdict: ParsedVerdict }
-  | { kind: 'approve'; pr: number; reviewer: Reviewer }
-  | { kind: 'revoke'; pr: number; reviewer: Reviewer }
+  | { kind: 'approve'; pr: number; reviewer: Reviewer; repo?: string }
+  | { kind: 'revoke'; pr: number; reviewer: Reviewer; repo?: string }
   | { kind: 'reply'; body: string };
 
 // Neither reply names a handle with "@": that would address someone.
 export const NOT_A_REVIEWER = "I only act on approvals from this room's named reviewers.";
 export const USAGE =
-  'I take two commands after mentioning me: "approve #<number>", and "revoke #<number>" to take your approval back.';
+  'I take two commands after mentioning me: "approve #<number>", and "revoke #<number>" to take your approval back. ' +
+  'For a pull request in another repo, write it as owner/repo#<number>.';
 
 export function readMessage(payload: MessagePayload, live: boolean, config: InboxConfig): Action[] {
   const sender = payload.sender ?? '';
@@ -52,8 +55,8 @@ export function readMessage(payload: MessagePayload, live: boolean, config: Inbo
     return actions;
   }
 
-  const approve = parseApproval(body, config.handle);
-  const revoke = parseRevoke(body, config.handle);
+  const approve = parseApprovalTarget(body, config.handle);
+  const revoke = parseRevokeTarget(body, config.handle);
   const spokenTo = approve !== null || revoke !== null || opensWithMention(body, config.handle);
   if (!spokenTo) {
     // Mentioned in passing, e.g. "@builder please notify @keyholder to merge
@@ -67,9 +70,9 @@ export function readMessage(payload: MessagePayload, live: boolean, config: Inbo
   }
   const reviewer = { key: sender || senderName, label: senderName || sender };
   if (approve !== null) {
-    actions.push({ kind: 'approve', pr: approve, reviewer });
+    actions.push({ kind: 'approve', pr: approve.pr, reviewer, ...(approve.repo ? { repo: approve.repo } : {}) });
   } else if (revoke !== null) {
-    actions.push({ kind: 'revoke', pr: revoke, reviewer });
+    actions.push({ kind: 'revoke', pr: revoke.pr, reviewer, ...(revoke.repo ? { repo: revoke.repo } : {}) });
   } else {
     actions.push({ kind: 'reply', body: USAGE });
   }

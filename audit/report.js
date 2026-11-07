@@ -1,6 +1,9 @@
 // Combines the files audit/run.sh wrote into the one JSON line @auditor reads.
 //
-//   node audit/report.js <out-dir> <pr-number> <head-sha> <test-exit-code>
+//   node audit/report.js <out-dir> <pr-number> <head-sha> <test-exit-code> [owner/repo]
+//
+// `repo` is the repo the pull request is on. @auditor copies it into its
+// verdict tag, so @keyholder knows which repo's #N the verdict is for.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -48,8 +51,9 @@ function readJson(path) {
 }
 
 if (isEntryPoint(import.meta.url)) {
-  const [outDir, pr, headSha, testExit] = process.argv.slice(2);
+  const [outDir, pr, headSha, testExit, repo] = process.argv.slice(2);
   const report = {
+    ...(repo ? { repo } : {}),
     pr: Number(pr),
     head_sha: headSha,
     tests: summarizeTests(readFileSync(join(outDir, 'tests.log'), 'utf8'), Number(testExit)),

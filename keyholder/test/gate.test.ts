@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Gate, type GateOptions, type GitHubPort, type PullRequest } from '../src/gate.ts';
+import { RepoRouter, parseRepositories } from '../src/repos.ts';
 import { parseVerdictTag, type CheckRun } from '../src/rules.ts';
 
 const A = 'a'.repeat(40);
@@ -380,4 +381,71 @@ test('nothing posted about base branches or revocations mentions anyone', async 
     posts.filter((post) => post.includes('@')),
     [],
   );
+});
+
+test('the CI timeout message names the configured wait, keeps the approvals and mentions no one', async () => {
+  const { gate, posts, verdict, github } = setup({ ciPollMs: 3000, ciTimeoutMs: 120_000 });
+  verdict('LOW');
+  github.paths = ['README.md'];
+  github.runs = [[{ status: 'in_progress', conclusion: null }]];
+  await gate.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /after 120 seconds\. The approvals stand; approve again/);
+  assert.ok(!posts.at(-1)!.includes('@'));
+  assert.deepEqual(github.merged, []);
+});
+
+test('two repos behind one keyholder keep their approvals and verdicts apart', async () => {
+  const posts: string[] = [];
+  const room = { post: async (body: string) => void posts.push(body), record: async () => {} };
+  const fakes = new Map<string, FakeGitHub>();
+  const states = new Map<string, { approvals: Record<string, unknown> }>();
+  const router = new RepoRouter(parseRepositories('org/repo-a', 'org/repo-b'), (repo, isDefault) => {
+    const github = new FakeGitHub();
+    const state = { approvals: {} };
+    fakes.set(repo.name, github);
+    states.set(repo.name, state);
+    return new Gate(github, room, state, {
+      ciPollMs: 1,
+      ciTimeoutMs: 3,
+      sleep: async () => {},
+      repoLabel: isDefault ? undefined : repo.name,
+    });
+  });
+  const tag = (repo: string) =>
+    parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "repo": "${repo}", "risk": "HIGH", "head_sha": "${A}"} -->`)!;
+  router.route('org/repo-a')!.recordVerdict(tag('org/repo-a'));
+  router.route('org/repo-b')!.recordVerdict(tag('org/repo-b'));
+
+  // Both approvals go to repo-b's #1. repo-a's #1, same number and same
+  // commit, gets none of them.
+  await router.route('org/repo-b')!.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /^Approval from alice recorded for org\/repo-b#1 \(1 of 2/);
+  assert.deepEqual(states.get('org/repo-a')!.approvals, {});
+  await router.route('org/repo-b')!.handleApproval(1, bob);
+  assert.deepEqual(fakes.get('org/repo-b')!.merged, [A]);
+  assert.deepEqual(fakes.get('org/repo-a')!.merged, []);
+
+  // One approval on repo-a's #1 is still one of two: bob's repo-b approval
+  // doesn't carry over.
+  await router.route(null)!.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /^Approval from alice recorded for #1 \(1 of 2/);
+  assert.deepEqual(fakes.get('org/repo-a')!.merged, []);
+});
+
+test('a verdict for one repo does not count for the same number in another', async () => {
+  const posts: string[] = [];
+  const room = { post: async (body: string) => void posts.push(body), record: async () => {} };
+  const router = new RepoRouter(parseRepositories('org/repo-a', 'org/repo-b'), (repo, isDefault) =>
+    new Gate(new FakeGitHub(), room, { approvals: {} }, {
+      ciPollMs: 1,
+      ciTimeoutMs: 3,
+      sleep: async () => {},
+      repoLabel: isDefault ? undefined : repo.name,
+    }),
+  );
+  router
+    .route('org/repo-a')!
+    .recordVerdict(parseVerdictTag(`<!-- DUALDRIVE_VERDICT: {"pr": 1, "risk": "LOW", "head_sha": "${A}"} -->`)!);
+  await router.route('org/repo-b')!.handleApproval(1, alice);
+  assert.match(posts.at(-1)!, /No audit verdict yet for org\/repo-b#1/);
 });

@@ -1,0 +1,75 @@
+# The DualDrive sandbox: the real @keyholder against a mock Switch room and a
+# mock GitHub, so the whole dual-control flow runs with no accounts, tokens or
+# network access to either. `docker compose up`, or scripts/demo-sandbox.sh
+# for a clean exit code.
+#
+# The tokens below are placeholders the mocks accept; there is nothing real
+# to protect here. A real setup keeps keyholder's settings in its own .env
+# under its own user (README, setup step 4).
+
+name: dualdrive-sandbox
+
+services:
+  mock-switch:
+    image: node:22-alpine
+    command: ["node", "/mock/switch-server.mjs"]
+    volumes:
+      - ./mock:/mock:ro
+    environment: &mock
+      PORT: "8080"
+      KEYHOLDER_AGENT_ID: keyholder-sandbox
+      KEYHOLDER_API_KEY: sandbox-key
+      DUALDRIVE_ROOM_ID: sandbox-room
+      GITHUB_REPOSITORY: sandbox/demo-service
+      # Who Switch lets address @keyholder: the two reviewers, no agents.
+      ADDRESSING_ALLOW: alice,bob
+    ports:
+      - "127.0.0.1:${SANDBOX_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+    read_only: true
+    user: node
+
+  keyholder:
+    build: ./keyholder
+    depends_on:
+      mock-switch:
+        condition: service_healthy
+    environment:
+      SWITCH_BRIDGE_URL: http://mock-switch:8080
+      KEYHOLDER_AGENT_ID: keyholder-sandbox
+      KEYHOLDER_API_KEY: sandbox-key
+      DUALDRIVE_ROOM_ID: sandbox-room
+      REVIEWER_SENDERS: alice,bob
+      AUDITOR_SENDERS: auditor
+      GITHUB_REPOSITORY: sandbox/demo-service
+      GITHUB_TOKEN: sandbox-placeholder
+      GITHUB_API_URL: http://mock-switch:8080/github
+      REQUIRED_CHECKS: test
+      CI_TIMEOUT_MS: "10000"
+      # A fresh start each run, so a half-finished run leaves nothing behind.
+      KEYHOLDER_STATE_FILE: /tmp/state.json
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+  demo:
+    image: node:22-alpine
+    command: ["node", "/mock/demo.mjs"]
+    volumes:
+      - ./mock:/mock:ro
+    depends_on:
+      mock-switch:
+        condition: service_healthy
+      keyholder:
+        condition: service_started
+    environment:
+      MOCK_URL: http://mock-switch:8080
+      GITHUB_REPOSITORY: sandbox/demo-service
+    read_only: true
+    user: node
