@@ -14,16 +14,19 @@
 #   6  on a second upstream whose default   the configured command runs
 #      branch has a .dualdrive.json
 #
-# The upstreams are local bare repos with refs/pull/<n>/head, as GitHub has.
-# The changed-files call still goes to GitHub, for GITHUB_REPOSITORY's pull
-# requests 1 to 6, so that repo has to have them; only the reply's shape is
-# checked here.
+# Pull request 1 also adds 120 notes, so its changed files take two pages of
+# the files API.
 #
-#   GITHUB_REPOSITORY=owner/repo bash scripts/audit-e2e.sh
+# The upstreams are local bare repos with refs/pull/<n>/head, as GitHub has.
+# The changed-files call goes to a stand-in for GitHub's files API (through
+# GITHUB_API_URL) that answers from the same git history, so nothing here
+# depends on which repo, fork or pull requests the script runs from.
+#
+#   bash scripts/audit-e2e.sh
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-: "${GITHUB_REPOSITORY:?Set GITHUB_REPOSITORY to a public repo that has pull requests 1 to 6}"
+REPO=e2e/demo-service
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/audit-e2e-XXXXXX")"
 echo "working in $WORK"
@@ -63,6 +66,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 test('e2e: passes', () => assert.equal(1 + 1, 2));
 EOF
+mkdir -p "$SRC/notes"
+for i in $(seq 1 120); do
+  echo "note $i" >"$SRC/notes/note-$i.md"
+done
 push_pr 1
 
 open_pr 2
@@ -131,6 +138,41 @@ test('e2e: passes', () => assert.equal(1 + 1, 2));
 EOF
 push_pr 6 "$WORK/configured.git"
 
+# What GitHub's files API would list for each pull request: every path that
+# differs from the branch it targets.
+mkdir -p "$WORK/files"
+for n in 1 2 3 4 5 6; do
+  base=main
+  if [ "$n" -eq 6 ]; then
+    base=configured
+  fi
+  "${GIT[@]}" diff --name-only "$base" "${HEADS[$n]}" >"$WORK/files/$n.txt"
+done
+
+# Stands in for GitHub's files API, a page at a time, as GitHub pages it.
+FILES_PORT=48732
+# shellcheck disable=SC2016 # the ${...} is JavaScript, for node
+node -e '
+  const [port, dir, repo] = process.argv.slice(1);
+  const fs = require("node:fs");
+  require("node:http").createServer((req, res) => {
+    const url = new URL(req.url, "http://stand-in");
+    const found = url.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/pulls\/(\d+)\/files$/);
+    const list = found && found[1] === repo && fs.existsSync(`${dir}/${found[2]}.txt`)
+      ? fs.readFileSync(`${dir}/${found[2]}.txt`, "utf8").split("\n").filter(Boolean)
+      : null;
+    if (!list) {
+      res.writeHead(404).end("{\"message\":\"Not Found\"}");
+      return;
+    }
+    const perPage = Number(url.searchParams.get("per_page") ?? 30);
+    const page = Number(url.searchParams.get("page") ?? 1);
+    const files = list.slice((page - 1) * perPage, page * perPage).map((filename) => ({ filename, status: "modified" }));
+    res.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(files));
+  }).listen(Number(port), "127.0.0.1");
+' "$FILES_PORT" "$WORK/files" "$REPO" &
+FILES_PID=$!
+
 # Stands in for a registry the pull request controls: logs every request.
 HITS="$WORK/registry-hits.log"
 : >"$HITS"
@@ -143,7 +185,8 @@ node -e '
   }).listen(Number(port), "127.0.0.1");
 ' "$PORT" "$HITS" &
 REGISTRY_PID=$!
-trap 'kill "$REGISTRY_PID" 2>/dev/null || true' EXIT
+trap 'kill "$REGISTRY_PID" "$FILES_PID" 2>/dev/null || true' EXIT
+sleep 1
 
 for n in 1 2 3 4 5 6; do
   upstream="$WORK/upstream.git"
@@ -151,13 +194,14 @@ for n in 1 2 3 4 5 6; do
     upstream="$WORK/configured.git"
   fi
   echo "auditing pull request $n"
-  (cd "$WORK/project" && UPSTREAM_REPO_URL="file://$upstream" AUDIT_E2E_PROBE=e2e-probe-value \
+  (cd "$WORK/project" && UPSTREAM_REPO_URL="file://$upstream" GITHUB_REPOSITORY="$REPO" \
+    GITHUB_API_URL="http://127.0.0.1:$FILES_PORT" AUDIT_GITHUB_TOKEN='' AUDIT_E2E_PROBE=e2e-probe-value \
     bash audit/run.sh "$n") >"$WORK/report-$n.json"
 done
 
-node - "$WORK" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" <<'EOF'
+node - "$WORK" "$REPO" "${HEADS[1]}" "${HEADS[2]}" "${HEADS[3]}" "${HEADS[4]}" "${HEADS[5]}" "${HEADS[6]}" <<'EOF'
 const { readFileSync } = require('node:fs');
-const [work, ...heads] = process.argv.slice(2);
+const [work, repo, ...heads] = process.argv.slice(2);
 const report = (n) => JSON.parse(readFileSync(`${work}/report-${n}.json`, 'utf8'));
 const failures = [];
 const expect = (ok, what) => {
@@ -168,11 +212,16 @@ const expect = (ok, what) => {
 for (const n of [1, 2, 3, 4, 5, 6]) {
   const r = report(n);
   expect(r.pr === n, `#${n}: the report names pull request ${n}`);
-  expect(r.repo === process.env.GITHUB_REPOSITORY, `#${n}: the report names the repo`);
+  expect(r.repo === repo, `#${n}: the report names the repo`);
   expect(r.head_sha === heads[n - 1], `#${n}: head_sha is the pull request's commit`);
-  expect(Array.isArray(r.changedPaths), `#${n}: changedPaths came back from GitHub`);
+  const want = readFileSync(`${work}/files/${n}.txt`, 'utf8').split('\n').filter(Boolean).sort();
+  expect(
+    JSON.stringify(r.changedPaths) === JSON.stringify(want),
+    `#${n}: changedPaths lists the ${want.length} file${want.length === 1 ? '' : 's'} the pull request changes`,
+  );
   expect(Array.isArray(r.secrets?.findings), `#${n}: the secret scan ran`);
 }
+expect(report(1).changedPaths.length > 100, '#1: changedPaths read both pages of the files API');
 expect(report(1).tests.passed === true, '#1: a passing test passes');
 expect(report(2).tests.passed === false && report(2).tests.fail >= 1, '#2: a failing test fails');
 const network = report(3).tests;

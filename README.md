@@ -176,7 +176,7 @@ Every pull request and every push to `main` runs these. `security` also runs wee
 | `typecheck` | `tsc --noEmit` over keyholder. |
 | `test (Node 24)` | The same tests on the next Node LTS, since `engines` allows any Node from 22 up. |
 | `test (macOS)` | The tests on macOS, where the setup runs, plus `scripts/run-sh-guards.sh`: the ways `audit/run.sh` refuses to start, under macOS's `/bin/bash` 3.2. |
-| `audit/run.sh end to end` | `scripts/audit-e2e.sh` runs `audit/run.sh` with Docker against a local copy of demo-service: a passing test, a failing one, one that tries the network, and a pull request whose `.npmrc` tries to send an environment variable to its own registry. |
+| `audit/run.sh end to end` | `scripts/audit-e2e.sh` runs `audit/run.sh` with Docker against a local copy of demo-service: a passing test, a failing one, one that tries the network, a pull request whose `.npmrc` tries to send an environment variable to its own registry, one that tries to choose its own test command, and an upstream with a `.dualdrive.json`. A local stand-in answers GitHub's files API, so it needs no pull requests on GitHub. |
 | `shellcheck` | `audit/run.sh` and `scripts/*.sh`. |
 | `actionlint` | This repo's workflows and demo-service's. |
 | `yaml` | The Switch room template parses. |
@@ -190,7 +190,7 @@ Most of them run locally too:
 ```bash
 node scripts/check-env-docs.mjs
 bash scripts/run-sh-guards.sh /bin/bash
-GITHUB_REPOSITORY=arshilkxwork/dualdrive bash scripts/audit-e2e.sh   # needs Docker running
+bash scripts/audit-e2e.sh   # needs Docker running
 ```
 
 ## Known limitations

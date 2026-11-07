@@ -165,7 +165,8 @@ else
 fi
 
 # Changed files, from the same API call @keyholder makes for its floor check,
-# every page of it. A local git diff can't work here: both refs were fetched
+# every page of it. GITHUB_API_URL points it at GitHub Enterprise, or at the
+# stand-in scripts/audit-e2e.sh runs. A local git diff can't work here: both refs were fetched
 # at depth 1 and share no reachable merge base. demo-service is public, so a
 # token is optional; AUDIT_GITHUB_TOKEN, a read-only one, only raises the
 # rate limit.
@@ -175,11 +176,13 @@ if [ -n "${AUDIT_GITHUB_TOKEN:-}" ]; then
 else
   echo "audit/run.sh: AUDIT_GITHUB_TOKEN is unset; using unauthenticated GitHub API (rate limit: 60 req/hr)" >&2
 fi
+GITHUB_API="${GITHUB_API_URL:-https://api.github.com}"
+GITHUB_API="${GITHUB_API%/}"
 page=1
 while :; do
   curl -fsS ${AUTH[@]+"${AUTH[@]}"} \
     -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
+    "$GITHUB_API/repos/$GITHUB_REPOSITORY/pulls/$PR_NUM/files?per_page=100&page=$page" \
     >"$OUT/files-$page.json"
   count=$(node -e 'const data = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8")); if (!Array.isArray(data)) { console.error("GitHub files API response is not an array"); process.exit(1); } console.log(data.length);' "$OUT/files-$page.json")
   [[ "$count" =~ ^[0-9]+$ ]] || die "GitHub files API returned unexpected response on page $page"

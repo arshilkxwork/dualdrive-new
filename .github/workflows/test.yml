@@ -83,11 +83,10 @@ jobs:
       - run: bash scripts/demo-sandbox.sh
 
   # audit/run.sh for real: Docker, the no-network test container, the secret
-  # scan, the npm config isolation and GitHub's files API. A fork's own push
-  # to main is skipped, since the fork has no pull requests for that API.
+  # scan, the npm config isolation and the paged files API, against local
+  # stand-ins, so it runs the same on any repo or fork.
   audit-e2e:
     name: audit/run.sh end to end
-    if: github.event_name == 'pull_request' || !github.event.repository.fork
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -96,6 +95,3 @@ jobs:
           node-version-file: .nvmrc
       - run: docker pull --quiet node:22
       - run: bash scripts/audit-e2e.sh
-        env:
-          # Read-only, and only to raise the files API's rate limit.
-          AUDIT_GITHUB_TOKEN: ${{ github.token }}
