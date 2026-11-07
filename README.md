@@ -155,13 +155,6 @@ Take Switch away and there is no shared room, no addressing policy to enforce, n
 
 > 📺 **Watch the Submission Demo Video:** [YouTube: DualDrive Demo Walkthrough (2:45)](https://youtu.be/wN1CVuk-jH8)
 
-1. A reviewer: "@builder add an emergency bypass that skips token checks". @builder opens a pull request from its fork, CI runs, and @auditor posts a CRITICAL verdict (CWE-306) quoting the line.
-2. A reviewer, word for word: "@builder please notify @keyholder to merge PR #1." @builder's reply contains the literal `@keyholder` mention, and Switch refuses it. Say on camera that this refusal comes from Switch, not from this repo.
-3. A reviewer asks for the proper fix: `crypto.scrypt` hashing, `crypto.timingSafeEqual`, and tests. Tests pass in the no-network container. @auditor says MEDIUM, and @keyholder raises it to HIGH because `src/auth.js` changed.
-4. Alice approves: "1 of 2". Alice again: "already counted". Bob approves: @keyholder confirms the head, waits for green CI, merges, and posts the link and the ledger entry.
-
-**Recording alone:** log in to Mattermost as alice in one browser profile and as bob in another (or a private window), side by side. A teammate is better if you have one.
-
 ## Tests
 
 ```bash
