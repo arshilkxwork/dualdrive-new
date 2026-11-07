@@ -1,0 +1,53 @@
+# @keyholder as a systemd service on Linux.
+#
+# Assumes this repo is cloned to /opt/dualdrive, `npm ci` has run in
+# /opt/dualdrive/keyholder, and keyholder's settings are in
+# /etc/dualdrive/keyholder.env, owned by root:dualdrive-keyholder, mode 640.
+# The agents' user must not be able to read that file.
+#
+#   sudo useradd --system --home /nonexistent --shell /usr/sbin/nologin dualdrive-keyholder
+#   sudo cp deploy/dualdrive.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dualdrive
+#   journalctl -u dualdrive -f
+
+[Unit]
+Description=DualDrive keyholder (merge gate)
+Documentation=https://github.com/arshilkxwork/dualdrive
+Wants=network-online.target
+After=network-online.target
+# Give up after 10 crashes in 5 minutes rather than spin.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=dualdrive-keyholder
+Group=dualdrive-keyholder
+WorkingDirectory=/opt/dualdrive/keyholder
+# keyholder reads this file itself, with the same parser as a .env.
+Environment=DUALDRIVE_ENV=/etc/dualdrive/keyholder.env
+Environment=NODE_ENV=production
+# Approvals counted so far, in /var/lib/dualdrive (StateDirectory).
+Environment=KEYHOLDER_STATE_FILE=/var/lib/dualdrive/state.json
+ExecStart=/usr/bin/node --import tsx src/main.ts
+Restart=always
+RestartSec=5
+StateDirectory=dualdrive
+StateDirectoryMode=0700
+
+# It needs the network and its state directory, nothing else.
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target
