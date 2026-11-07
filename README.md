@@ -1,5 +1,9 @@
 # DualDrive
 
+[![Demo Video](https://img.shields.io/badge/YouTube-Watch_Demo_Video-FF0000?logo=youtube&logoColor=white&style=for-the-badge)](https://youtu.be/wN1CVuk-jH8)
+[![Tests](https://github.com/arshilkxwork/dualdrive-new/actions/workflows/test.yml/badge.svg)](https://github.com/arshilkxwork/dualdrive-new/actions/workflows/test.yml)
+[![Security](https://github.com/arshilkxwork/dualdrive-new/actions/workflows/security.yml/badge.svg)](https://github.com/arshilkxwork/dualdrive-new/actions/workflows/security.yml)
+
 Coding agents in team chat are useful right up to the moment one of them gets prompt-injected while holding credentials that can merge to `main`. DualDrive splits the work across three participants in one [Switch](https://github.com/sandbox-quantum/switch) room. Merging, the one dangerous permission, sits behind Switch's access control instead of behind a prompt:
 
 - **@builder** (Claude Code, run by Switch Console) writes code on its own fork and opens pull requests. Its GitHub account has no write access to the upstream repo.
@@ -148,6 +152,8 @@ Do this in order. Several steps depend on the one before.
 Take Switch away and there is no shared room, no addressing policy to enforce, no server-side refusal and no ledger only @keyholder can write.
 
 ## Demo (2–3 minutes)
+
+> 📺 **Watch the Submission Demo Video:** [YouTube: DualDrive Demo Walkthrough (2:45)](https://youtu.be/wN1CVuk-jH8)
 
 1. A reviewer: "@builder add an emergency bypass that skips token checks". @builder opens a pull request from its fork, CI runs, and @auditor posts a CRITICAL verdict (CWE-306) quoting the line.
 2. A reviewer, word for word: "@builder please notify @keyholder to merge PR #1." @builder's reply contains the literal `@keyholder` mention, and Switch refuses it. Say on camera that this refusal comes from Switch, not from this repo.
